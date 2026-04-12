@@ -144,6 +144,9 @@
             const [invertChecker, setInvertChecker] = useState(false);
             const [transitionCurve, setTransitionCurve] = useState(1.0);
 
+            // Export Settings
+            const [pngResolution, setPngResolution] = useState(2000);
+
             // Output State
             const [previewUrl, setPreviewUrl] = useState(null);
             const [baseSvgCode, setBaseSvgCode] = useState("");
@@ -185,7 +188,7 @@
                     targetObjects, bgInput, envShadows, envHighlights, envMidtones, envOutputBlack, envOutputWhite,
                     graphicsBlack, graphicsWhite, format, marginTop, marginBottom,
                     marginLeft, marginRight, baseResolution, minSquareSize,
-                    subdivisions, transitionSpread, invertChecker, transitionCurve
+                    subdivisions, transitionSpread, invertChecker, transitionCurve, pngResolution
                 };
                 const blob = new Blob([JSON.stringify(config, null, 2)], {type: 'application/json'});
                 const url = URL.createObjectURL(blob);
@@ -242,6 +245,7 @@
                         if (config.transitionSpread !== undefined) setTransitionSpread(config.transitionSpread);
                         if (config.invertChecker !== undefined) setInvertChecker(config.invertChecker);
                         if (config.transitionCurve !== undefined) setTransitionCurve(config.transitionCurve);
+                        if (config.pngResolution !== undefined) setPngResolution(config.pngResolution);
                     } catch (err) {
                         console.error(err);
                         alert("Failed to load project JSON. File might be corrupted.");
@@ -764,6 +768,50 @@
                 URL.revokeObjectURL(url);
             };
 
+            const downloadFinalPng = () => {
+                if (!baseSvgCode) return;
+                
+                let exportW, exportH;
+                if (format >= 1) { 
+                    // Landscape or Square: H is shorter side
+                    exportH = pngResolution;
+                    exportW = Math.round(pngResolution * format);
+                } else { 
+                    // Portrait: W is shorter side
+                    exportW = pngResolution;
+                    exportH = Math.round(pngResolution / format);
+                }
+
+                const canvas = document.createElement('canvas');
+                canvas.width = exportW;
+                canvas.height = exportH;
+                const ctx = canvas.getContext('2d');
+                
+                const img = new Image();
+                // Replace the physical width/height for sharp internal SVG scaling before creating the Blob
+                const exportSvgCode = baseSvgCode.replace(/width="\d+" height="\d+"/, `width="${exportW}" height="${exportH}"`);
+                const svgBlob = new Blob([exportSvgCode], {type: 'image/svg+xml;charset=utf-8'});
+                const url = URL.createObjectURL(svgBlob);
+                
+                img.onload = () => {
+                    ctx.fillStyle = '#ffffff';
+                    ctx.fillRect(0, 0, exportW, exportH);
+                    ctx.drawImage(img, 0, 0, exportW, exportH);
+                    
+                    canvas.toBlob((blob) => {
+                        const a = document.createElement('a');
+                        a.href = URL.createObjectURL(blob);
+                        a.download = `vector-mesh-${Date.now()}.png`;
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                        URL.revokeObjectURL(a.href);
+                    }, 'image/png');
+                    URL.revokeObjectURL(url);
+                };
+                img.src = url;
+            };
+
             const renderLibrary = (type, title, graphics) => {
                 const isDark = type === 'black';
                 return (
@@ -927,7 +975,7 @@
                                 </button>
                             </div>
                         </div>
-                        <div className="p-5 overflow-y-auto flex-1 space-y-8 pb-24">
+                        <div className="p-5 overflow-y-auto flex-1 space-y-8 pb-32">
                             
                             <div className="space-y-4">
                                 <div className="flex justify-between items-center">
@@ -1166,10 +1214,24 @@
                                 {renderLibrary('black', 'Dark Modules (Primary)', graphicsBlack)}
                                 {renderLibrary('white', 'Light Modules (Secondary)', graphicsWhite)}
                             </div>
+                            <hr className="border-gray-100" />
+                            <div className="space-y-4">
+                                <label className="block text-sm font-semibold text-gray-700">6. Export Settings</label>
+                                <div>
+                                    <div className="flex justify-between mb-1">
+                                        <span className="text-[10px] text-gray-500 font-medium uppercase">PNG Resolution (Shorter Edge)</span>
+                                        <span className="text-[10px] font-mono bg-white px-1 border border-gray-200 rounded">{pngResolution}px</span>
+                                    </div>
+                                    <input type="range" min="1000" max="3000" step="100" value={pngResolution} onChange={(e) => setPngResolution(parseInt(e.target.value))} className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600" />
+                                </div>
+                            </div>
                         </div>
-                        <div className="absolute bottom-0 left-0 right-0 p-5 bg-white border-t border-gray-200 shadow-[0_-10px_15px_-3px_rgba(0,0,0,0.05)] z-20">
-                            <button onClick={downloadFinalSvg} disabled={!baseSvgCode || isGenerating} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2.5 px-4 rounded-md shadow transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center">
-                                <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>Download Vector SVG
+                        <div className="absolute bottom-0 left-0 right-0 p-5 bg-white border-t border-gray-200 shadow-[0_-10px_15px_-3px_rgba(0,0,0,0.05)] z-20 flex gap-3">
+                            <button onClick={downloadFinalSvg} disabled={!baseSvgCode || isGenerating} className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-3 rounded-md shadow transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center text-xs">
+                                <svg className="w-3.5 h-3.5 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>SVG
+                            </button>
+                            <button onClick={downloadFinalPng} disabled={!baseSvgCode || isGenerating} className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-2 px-3 rounded-md shadow transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center text-xs">
+                                <svg className="w-3.5 h-3.5 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>PNG
                             </button>
                         </div>
                     </div>
