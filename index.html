@@ -1,0 +1,1202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vector Mesh Graphics Generator</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <!-- Babel for in-browser JSX parsing -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <style>
+        body { margin: 0; padding: 0; background-color: #1E1E1E; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+        /* Custom Scrollbar for Settings Panel */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: translateY(0); } }
+        .animate-fade-in { animation: fadeIn 0.2s ease-out forwards; }
+        /* Color input styling */
+        input[type="color"] { -webkit-appearance: none; border: none; padding: 0; outline: none; }
+        input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
+        input[type="color"]::-webkit-color-swatch { border: 1px solid #e2e8f0; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+
+        const defaultSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+            <circle cx="100" cy="100" r="75" fill="black"/>
+            <circle cx="100" cy="100" r="45" fill="white"/>
+            <rect x="10" y="80" width="180" height="40" fill="black"/>
+        </svg>`;
+
+        const FORMATS = [
+            { name: 'Square (1:1)', aspectRatio: 1.0 },
+            { name: '4-Sheet / 6-Sheet (1:1.5) [Vertical]', aspectRatio: 0.6666 },
+            { name: '12-Sheet (2:1) [Horizontal]', aspectRatio: 2.0 },
+            { name: '16-Sheet (1:1.5) [Vertical]', aspectRatio: 0.6666 },
+            { name: '48-Sheet (2:1) [Horizontal]', aspectRatio: 2.0 },
+            { name: 'Escalator Panel / LEP (~1:2.1)', aspectRatio: 0.476 },
+        ];
+
+        const defaultTargetObject = {
+            id: 'obj-' + Date.now(),
+            isSolidFill: false,
+            solidFillColor: 'black',
+            svgInput: defaultSVG,
+            objectScale: 0.85,
+            alignH: 'center',
+            alignV: 'center',
+            offsetX: 0,
+            offsetY: 0,
+            borderEnabled: false,
+            borderThicknessIndex: 0,
+            borderPosition: 'outside',
+            borderColour: 'black',
+            borderBlurEnabled: false,
+            borderBlurAmount: 25
+        };
+
+        const parseGraphicSvgString = (text) => {
+            if (!text || !text.trim()) return { innerContent: '', viewBox: '0 0 100 100', origW: 100, origH: 100, minX: 0, minY: 0 };
+            try {
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(text, "image/svg+xml");
+                const svgEl = doc.documentElement;
+                if (svgEl.tagName.toLowerCase() !== 'svg') return { innerContent: '', viewBox: '0 0 100 100', origW: 100, origH: 100, minX: 0, minY: 0 };
+
+                let viewBox = svgEl.getAttribute('viewBox');
+                let origW = 100, origH = 100, minX = 0, minY = 0;
+                if (viewBox) {
+                    const vbParts = viewBox.split(/[\s,]+/).map(parseFloat);
+                    minX = vbParts[0] || 0;
+                    minY = vbParts[1] || 0;
+                    origW = Math.max(1, vbParts[2] || 100);
+                    origH = Math.max(1, vbParts[3] || 100);
+                } else {
+                    origW = Math.max(1, parseFloat(svgEl.getAttribute('width')) || 100);
+                    origH = Math.max(1, parseFloat(svgEl.getAttribute('height')) || 100);
+                    viewBox = `0 0 ${origW} ${origH}`;
+                }
+
+                const elements = doc.querySelectorAll('*');
+                elements.forEach(el => {
+                    if (el.hasAttribute('fill') && el.getAttribute('fill') !== 'none') el.removeAttribute('fill');
+                    if (el.hasAttribute('stroke') && el.getAttribute('stroke') !== 'none') el.removeAttribute('stroke');
+                    if (el.style.fill && el.style.fill !== 'none') el.style.fill = '';
+                    if (el.style.stroke && el.style.stroke !== 'none') el.style.stroke = '';
+                });
+                return { viewBox, origW, origH, minX, minY, innerContent: svgEl.innerHTML };
+            } catch (e) {
+                return { innerContent: '', viewBox: '0 0 100 100', origW: 100, origH: 100, minX: 0, minY: 0 };
+            }
+        };
+
+        const normalizeGraphics = (graphics) => graphics.map(g => {
+            if (g.isDefault) return g;
+            let currentSvgInput = g.svgInput;
+            if (g.isSolid && !currentSvgInput) currentSvgInput = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" /></svg>';
+            else if (g.raw && !currentSvgInput) currentSvgInput = g.raw;
+            const parsed = parseGraphicSvgString(currentSvgInput);
+            return { ...g, svgInput: currentSvgInput, ...parsed };
+        });
+
+        const App = () => {
+            // Target Objects State (Multiple SVGs)
+            const [targetObjects, setTargetObjects] = useState([defaultTargetObject]);
+            const [coreModuleIndex, setCoreModuleIndex] = useState(0); 
+
+            // Environment State
+            const [bgInput, setBgInput] = useState(null); 
+            const [envShadows, setEnvShadows] = useState(0);
+            const [envHighlights, setEnvHighlights] = useState(100);
+            const [envMidtones, setEnvMidtones] = useState(1.0);
+            const [envOutputBlack, setEnvOutputBlack] = useState(0);
+            const [envOutputWhite, setEnvOutputWhite] = useState(100);
+            
+            // Dual Custom Graphics Libraries
+            const [graphicsBlack, setGraphicsBlack] = useState([
+                { id: 'default-black', isDefault: true, ratio: 100, targetLevels: [...Array(20).keys()], baseFill: '#000000' }
+            ]);
+            const [graphicsWhite, setGraphicsWhite] = useState([
+                { id: 'default-white', isDefault: true, ratio: 100, targetLevels: [...Array(20).keys()], baseFill: '#ffffff' }
+            ]);
+
+            // Canvas Setup, Margins & Grid Structure
+            const [format, setFormat] = useState(FORMATS[0].aspectRatio);
+            const [marginTop, setMarginTop] = useState(10);
+            const [marginBottom, setMarginBottom] = useState(10);
+            const [marginLeft, setMarginLeft] = useState(10);
+            const [marginRight, setMarginRight] = useState(10);
+            const [baseResolution, setBaseResolution] = useState(1200);
+            const [minSquareSize, setMinSquareSize] = useState(6);
+            const [subdivisions, setSubdivisions] = useState(4);
+            const [transitionSpread, setTransitionSpread] = useState(25);
+            const [invertChecker, setInvertChecker] = useState(false);
+            const [transitionCurve, setTransitionCurve] = useState(1.0);
+
+            // Output State
+            const [previewUrl, setPreviewUrl] = useState(null);
+            const [baseSvgCode, setBaseSvgCode] = useState("");
+            const [isGenerating, setIsGenerating] = useState(false);
+            const [stats, setStats] = useState({ elements: 0, width: 0, height: 0 });
+
+            const safeCoreIndex = Math.min(coreModuleIndex, subdivisions);
+
+            useEffect(() => {
+                if (coreModuleIndex > subdivisions) setCoreModuleIndex(subdivisions);
+                setTargetObjects(prev => prev.map(obj => ({
+                    ...obj,
+                    borderThicknessIndex: Math.min(obj.borderThicknessIndex, subdivisions)
+                })));
+            }, [minSquareSize, subdivisions]);
+
+            const serializedGraphics = JSON.stringify({
+                b: graphicsBlack.map(g => ({id: g.id, ratio: g.ratio, targetLevels: g.targetLevels, elementScale: g.elementScale, fillColor: g.fillColor, baseFill: g.baseFill, borderSize: g.borderSize, borderColor: g.borderColor, borderPosition: g.borderPosition, svgInput: g.svgInput})),
+                w: graphicsWhite.map(g => ({id: g.id, ratio: g.ratio, targetLevels: g.targetLevels, elementScale: g.elementScale, fillColor: g.fillColor, baseFill: g.baseFill, borderSize: g.borderSize, borderColor: g.borderColor, borderPosition: g.borderPosition, svgInput: g.svgInput}))
+            });
+
+            const serializedTargets = JSON.stringify(targetObjects);
+            
+            useEffect(() => {
+                const timer = setTimeout(() => {
+                    generateMesh();
+                }, 300);
+                return () => clearTimeout(timer);
+            }, [
+                serializedTargets, bgInput, coreModuleIndex, envShadows, envHighlights, envMidtones, envOutputBlack, envOutputWhite,
+                marginTop, marginBottom, marginLeft, marginRight,
+                format, baseResolution, minSquareSize, subdivisions, 
+                transitionSpread, invertChecker, transitionCurve,
+                serializedGraphics
+            ]);
+
+            const exportSettings = () => {
+                const config = {
+                    targetObjects, bgInput, envShadows, envHighlights, envMidtones, envOutputBlack, envOutputWhite,
+                    graphicsBlack, graphicsWhite, format, marginTop, marginBottom,
+                    marginLeft, marginRight, baseResolution, minSquareSize,
+                    subdivisions, transitionSpread, invertChecker, transitionCurve
+                };
+                const blob = new Blob([JSON.stringify(config, null, 2)], {type: 'application/json'});
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `vector-mesh-project-${Date.now()}.json`;
+                a.click();
+                URL.revokeObjectURL(url);
+            };
+
+            const importSettings = (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    try {
+                        const config = JSON.parse(event.target.result);
+                        
+                        if (config.targetObjects !== undefined) {
+                            setTargetObjects(config.targetObjects.map(obj => ({...defaultTargetObject, ...obj})));
+                        } else if (config.svgInput !== undefined) {
+                            // Legacy single-object support
+                            setTargetObjects([{
+                                ...defaultTargetObject,
+                                id: 'legacy-' + Date.now(),
+                                svgInput: config.svgInput,
+                                objectScale: config.objectScale || 0.85,
+                                borderEnabled: config.borderEnabled || false,
+                                borderThicknessIndex: config.borderThicknessIndex || 0,
+                                borderPosition: config.borderPosition || 'outside',
+                                borderColour: config.borderColour || 'black',
+                                borderBlurEnabled: config.borderBlurEnabled || false,
+                                borderBlurAmount: config.borderBlurAmount || 25
+                            }]);
+                        }
+
+                        if (config.coreModuleIndex !== undefined) setCoreModuleIndex(config.coreModuleIndex);
+                        if (config.bgInput !== undefined) setBgInput(config.bgInput);
+                        if (config.envShadows !== undefined) setEnvShadows(config.envShadows);
+                        if (config.envHighlights !== undefined) setEnvHighlights(config.envHighlights);
+                        if (config.envMidtones !== undefined) setEnvMidtones(config.envMidtones);
+                        if (config.envOutputBlack !== undefined) setEnvOutputBlack(config.envOutputBlack);
+                        if (config.envOutputWhite !== undefined) setEnvOutputWhite(config.envOutputWhite);
+                        if (config.graphicsBlack !== undefined) setGraphicsBlack(normalizeGraphics(config.graphicsBlack));
+                        if (config.graphicsWhite !== undefined) setGraphicsWhite(normalizeGraphics(config.graphicsWhite));
+                        if (config.format !== undefined) setFormat(config.format);
+                        if (config.marginTop !== undefined) setMarginTop(config.marginTop);
+                        if (config.marginBottom !== undefined) setMarginBottom(config.marginBottom);
+                        if (config.marginLeft !== undefined) setMarginLeft(config.marginLeft);
+                        if (config.marginRight !== undefined) setMarginRight(config.marginRight);
+                        if (config.baseResolution !== undefined) setBaseResolution(config.baseResolution);
+                        if (config.minSquareSize !== undefined) setMinSquareSize(config.minSquareSize);
+                        if (config.subdivisions !== undefined) setSubdivisions(config.subdivisions);
+                        if (config.transitionSpread !== undefined) setTransitionSpread(config.transitionSpread);
+                        if (config.invertChecker !== undefined) setInvertChecker(config.invertChecker);
+                        if (config.transitionCurve !== undefined) setTransitionCurve(config.transitionCurve);
+                    } catch (err) {
+                        console.error(err);
+                        alert("Failed to load project JSON. File might be corrupted.");
+                    }
+                };
+                reader.readAsText(file);
+                e.target.value = null; 
+            };
+
+            const loadImage = (srcStr, isSvg = false) => {
+                return new Promise((resolve) => {
+                    if (!srcStr) return resolve(null);
+                    const img = new Image();
+                    img.onload = () => resolve(img);
+                    img.onerror = () => resolve(null);
+                    if (isSvg && srcStr.startsWith('<svg')) {
+                        const blob = new Blob([srcStr], {type: 'image/svg+xml'});
+                        img.src = URL.createObjectURL(blob);
+                    } else if (srcStr.startsWith('data:')) {
+                        img.src = srcStr;
+                    } else if (isSvg) {
+                        try { img.src = "data:image/svg+xml;base64," + btoa(srcStr); } 
+                        catch(e) { resolve(null); }
+                    } else {
+                        img.src = srcStr;
+                    }
+                });
+            };
+
+            const getHash = (x, y) => {
+                let h = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453;
+                return h - Math.floor(h);
+            };
+
+            const getObjTransform = (obj, img, innerW, innerH, offsetX, offsetY) => {
+                let drawW = 0, drawH = 0, dx = 0, dy = 0;
+                if (!img) return { drawW, drawH, dx, dy };
+                
+                const imgAspect = img.width / img.height;
+                const scaleW = innerW * obj.objectScale;
+                const scaleH = innerH * obj.objectScale;
+                if (scaleW / imgAspect <= scaleH) {
+                    drawW = scaleW; drawH = drawW / imgAspect;
+                } else {
+                    drawH = scaleH; drawW = drawH * imgAspect;
+                }
+
+                const offX_px = innerW * (obj.offsetX / 100);
+                if (obj.alignH === 'left') dx = offsetX + offX_px;
+                else if (obj.alignH === 'right') dx = offsetX + innerW - drawW + offX_px;
+                else dx = offsetX + (innerW - drawW) / 2 + offX_px; 
+
+                const offY_px = innerH * (obj.offsetY / 100);
+                if (obj.alignV === 'top') dy = offsetY + offY_px;
+                else if (obj.alignV === 'bottom') dy = offsetY + innerH - drawH + offY_px;
+                else dy = offsetY + (innerH - drawH) / 2 + offY_px; 
+
+                return { drawW, drawH, dx, dy };
+            };
+
+            const generateMesh = async () => {
+                // Check if there are valid layers to render
+                const hasValidLayer = targetObjects.some(t => t.isSolidFill || t.svgInput.trim());
+                if (!hasValidLayer) return;
+
+                setIsGenerating(true);
+                await new Promise(r => setTimeout(r, 10));
+
+                try {
+                    const W = Math.round(baseResolution);
+                    const H = Math.round(baseResolution / format);
+                    const shortSide = Math.min(W, H); 
+                    
+                    const pxMarginLeft = Math.round(shortSide * (marginLeft / 100));
+                    const pxMarginRight = Math.round(shortSide * (marginRight / 100));
+                    const pxMarginTop = Math.round(shortSide * (marginTop / 100));
+                    const pxMarginBottom = Math.round(shortSide * (marginBottom / 100));
+
+                    const innerW = Math.max(10, W - pxMarginLeft - pxMarginRight);
+                    const innerH = Math.max(10, H - pxMarginTop - pxMarginBottom);
+
+                    const ideal_S_max = minSquareSize * Math.pow(2, subdivisions);
+                    const Cols = Math.max(1, Math.round(innerW / ideal_S_max));
+                    const Rows = Math.max(1, Math.round(innerH / ideal_S_max));
+                    
+                    const S_max_x = innerW / Cols;
+                    const S_max_y = innerH / Rows;
+                    
+                    const offsetX = pxMarginLeft;
+                    const offsetY = pxMarginTop;
+
+                    const adaptedMinSize = ((S_max_x + S_max_y) / 2) / Math.pow(2, subdivisions);
+
+                    // Load SVGs or Generate Solid Fill SVGs
+                    const loadedImgs = await Promise.all(targetObjects.map(obj => {
+                        let svgStr = obj.svgInput?.trim();
+                        if (!svgStr) return Promise.resolve(null);
+                        
+                        if (obj.isSolidFill) {
+                            const color = obj.solidFillColor || 'black';
+                            try {
+                                const parser = new DOMParser();
+                                const doc = parser.parseFromString(svgStr, "image/svg+xml");
+                                const elements = doc.querySelectorAll('*');
+                                elements.forEach(el => {
+                                    const tagName = el.tagName.toLowerCase();
+                                    if (['path', 'rect', 'circle', 'ellipse', 'polygon', 'polyline', 'line', 'text', 'g', 'svg'].includes(tagName)) {
+                                        if (el.hasAttribute('fill') && el.getAttribute('fill') === 'none') return;
+                                        el.setAttribute('fill', color);
+                                        el.style.fill = color;
+                                        if (el.hasAttribute('stroke') && el.getAttribute('stroke') !== 'none') {
+                                            el.setAttribute('stroke', color);
+                                            el.style.stroke = color;
+                                        }
+                                    }
+                                });
+                                svgStr = new XMLSerializer().serializeToString(doc);
+                            } catch(e) {
+                                console.error("Failed to recolor SVG", e);
+                            }
+                        }
+                        
+                        return loadImage(svgStr, true);
+                    }));
+
+                    const imgB = await loadImage(bgInput, false);
+
+                    const canvas = document.createElement('canvas');
+                    canvas.width = W;
+                    canvas.height = H;
+                    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+                    
+                    // Draw Combined Objects (imgDataA)
+                    ctx.clearRect(0, 0, W, H);
+                    targetObjects.forEach((obj, idx) => {
+                        const img = loadedImgs[idx];
+                        if (!img) return;
+                        const { drawW, drawH, dx, dy } = getObjTransform(obj, img, innerW, innerH, offsetX, offsetY);
+                        ctx.drawImage(img, dx, dy, drawW, drawH);
+                    });
+                    const imgDataA = ctx.getImageData(0, 0, W, H).data;
+
+                    // Draw Combined Blurred Mask (imgDataMask)
+                    ctx.clearRect(0, 0, W, H);
+                    if (transitionSpread > 0) {
+                        ctx.filter = `blur(${transitionSpread}px)`;
+                        targetObjects.forEach((obj, idx) => {
+                            const img = loadedImgs[idx];
+                            if (!img) return;
+                            const { drawW, drawH, dx, dy } = getObjTransform(obj, img, innerW, innerH, offsetX, offsetY);
+                            ctx.drawImage(img, dx, dy, drawW, drawH);
+                        });
+                        ctx.filter = 'none';
+                    } else {
+                        targetObjects.forEach((obj, idx) => {
+                            const img = loadedImgs[idx];
+                            if (!img) return;
+                            const { drawW, drawH, dx, dy } = getObjTransform(obj, img, innerW, innerH, offsetX, offsetY);
+                            ctx.drawImage(img, dx, dy, drawW, drawH);
+                        });
+                    }
+                    const imgDataMask = ctx.getImageData(0, 0, W, H).data;
+
+                    // Draw Background Map
+                    ctx.clearRect(0, 0, W, H);
+                    if (imgB) {
+                        ctx.drawImage(imgB, offsetX, offsetY, innerW, innerH);
+                    } 
+                    const imgDataB = ctx.getImageData(0, 0, W, H).data;
+
+                    // Compute per-object borders
+                    const borderLayers = [];
+                    for (let idx = 0; idx < targetObjects.length; idx++) {
+                        const obj = targetObjects[idx];
+                        const img = loadedImgs[idx];
+                        if (!obj.borderEnabled || !img) continue;
+
+                        const { drawW, drawH, dx, dy } = getObjTransform(obj, img, innerW, innerH, offsetX, offsetY);
+                        const objBorderAlpha = new Float32Array(W * H);
+                        
+                        ctx.clearRect(0, 0, W, H);
+                        ctx.drawImage(img, dx, dy, drawW, drawH);
+                        const singleImgData = ctx.getImageData(0, 0, W, H).data;
+
+                        const getAlphaMask = (invert, blurRadius) => {
+                            const tempC = document.createElement('canvas');
+                            tempC.width = W; tempC.height = H;
+                            const tCtx = tempC.getContext('2d');
+                            if (invert) {
+                                tCtx.fillStyle = 'black'; tCtx.fillRect(0,0,W,H);
+                                tCtx.globalCompositeOperation = 'destination-out';
+                                tCtx.drawImage(img, dx, dy, drawW, drawH);
+                            } else {
+                                tCtx.drawImage(img, dx, dy, drawW, drawH);
+                            }
+                            const blurC = document.createElement('canvas');
+                            blurC.width = W; blurC.height = H;
+                            const bCtxTemp = blurC.getContext('2d', { willReadFrequently: true });
+                            bCtxTemp.filter = `blur(${blurRadius}px)`;
+                            bCtxTemp.drawImage(tempC, 0, 0);
+                            return bCtxTemp.getImageData(0,0,W,H).data;
+                        };
+
+                        if (obj.borderBlurEnabled) {
+                            let outBlur = null, inBlur = null;
+                            if (obj.borderPosition === 'outside' || obj.borderPosition === 'centered') outBlur = getAlphaMask(false, obj.borderBlurAmount);
+                            if (obj.borderPosition === 'inside' || obj.borderPosition === 'centered') inBlur = getAlphaMask(true, obj.borderBlurAmount);
+                            for (let i = 0; i < W * H; i++) {
+                                const idxData = i * 4 + 3;
+                                const isOrig = singleImgData[idxData] > 127;
+                                let alpha = 0;
+                                if (obj.borderPosition === 'outside' && !isOrig) alpha = Math.min(1.0, (outBlur[idxData] / 255) * 2.0); 
+                                else if (obj.borderPosition === 'inside' && isOrig) alpha = Math.min(1.0, (inBlur[idxData] / 255) * 2.0);
+                                else if (obj.borderPosition === 'centered') alpha = Math.min(1.0, ((isOrig ? inBlur[idxData] : outBlur[idxData]) / 255) * 2.0);
+                                objBorderAlpha[i] = alpha;
+                            }
+                        } else {
+                            const safeBorderIndex = Math.min(obj.borderThicknessIndex, subdivisions);
+                            const borderSize = adaptedMinSize * Math.pow(2, safeBorderIndex);
+                            const effectiveR = obj.borderPosition === 'centered' ? borderSize / 2 : borderSize;
+                            let outBlur = null, inBlur = null;
+                            if (obj.borderPosition === 'outside' || obj.borderPosition === 'centered') outBlur = getAlphaMask(false, Math.max(1, effectiveR / 1.5));
+                            if (obj.borderPosition === 'inside' || obj.borderPosition === 'centered') inBlur = getAlphaMask(true, Math.max(1, effectiveR / 1.5));
+                            for (let i = 0; i < W * H; i++) {
+                                const idxData = i * 4 + 3;
+                                const isOrig = singleImgData[idxData] > 127;
+                                let isBorder = false;
+                                if (obj.borderPosition === 'outside') { if (outBlur[idxData] > 5 && !isOrig) isBorder = true; }
+                                else if (obj.borderPosition === 'inside') { if (isOrig && inBlur[idxData] > 5) isBorder = true; } 
+                                else if (obj.borderPosition === 'centered') { if ((outBlur[idxData] > 5 && !isOrig) || (isOrig && inBlur[idxData] > 5)) isBorder = true; }
+                                if (isBorder) objBorderAlpha[i] = 1.0;
+                            }
+                        }
+                        
+                        borderLayers.push({
+                            alphaData: objBorderAlpha,
+                            color: obj.borderColour,
+                            isBlurred: obj.borderBlurEnabled
+                        });
+                    }
+
+                    // Pre-calculate quadtree SAT
+                    const sat = new Float64Array((W + 1) * (H + 1));
+                    const coreDensity = 1.0 - (safeCoreIndex / (subdivisions + 1));
+                    for (let y = 0; y < H; y++) {
+                        let rowSum = 0;
+                        for (let x = 0; x < W; x++) {
+                            const i = (y * W + x) * 4;
+                            const alpha_sharp = imgDataA[i + 3] / 255; 
+                            let alpha_blur = imgDataMask[i + 3] / 255;
+                            if (alpha_blur > 0 && alpha_blur < 1) alpha_blur = Math.pow(alpha_blur, transitionCurve);
+                            let bg_luma = 0;
+                            if (imgB) {
+                                const bg_r = imgDataB[i], bg_g = imgDataB[i+1], bg_b = imgDataB[i+2], bg_a = imgDataB[i+3] / 255;
+                                let raw_luma = bg_a > 0 ? (bg_r * 0.299 + bg_g * 0.587 + bg_b * 0.114) / 255 : 0;
+                                const S = envShadows / 100;
+                                const H = envHighlights / 100;
+                                if (H <= S) raw_luma = raw_luma >= S ? 1 : 0;
+                                else {
+                                    raw_luma = Math.max(0, Math.min(1, (raw_luma - S) / (H - S)));
+                                    if (envMidtones !== 1.0) raw_luma = Math.pow(raw_luma, 1.0 / envMidtones);
+                                }
+                                const OB = envOutputBlack / 100;
+                                const OW = envOutputWhite / 100;
+                                raw_luma = raw_luma * (OW - OB) + OB;
+                                bg_luma = raw_luma;
+                            }
+                            const density_under = bg_luma * (1 - alpha_blur) + coreDensity * alpha_blur;
+                            const finalDensity = density_under * (1 - alpha_sharp) + coreDensity * alpha_sharp;
+                            rowSum += finalDensity;
+                            sat[(y + 1) * (W + 1) + (x + 1)] = sat[y * (W + 1) + (x + 1)] + rowSum;
+                        }
+                    }
+
+                    const getAverageDensity = (x, y, w, h) => {
+                        const x1 = Math.max(0, Math.min(W, Math.floor(x))), y1 = Math.max(0, Math.min(H, Math.floor(y)));
+                        const x2 = Math.max(0, Math.min(W, Math.floor(x + w))), y2 = Math.max(0, Math.min(H, Math.floor(y + h)));
+                        const area = (x2 - x1) * (y2 - y1);
+                        if (area === 0) return 0;
+                        const sum = sat[y2 * (W + 1) + x2] - sat[y1 * (W + 1) + x2] - sat[y2 * (W + 1) + x1] + sat[y1 * (W + 1) + x1];
+                        return sum / area;
+                    };
+
+                    const rects = [];
+                    const max_cells = Math.pow(2, subdivisions);
+                    const subdivide = (x, y, w, h, gridX, gridY, depth) => {
+                        if (depth === 0) {
+                            rects.push({ x, y, w, h, gridX, gridY, depth, isBlack: (gridX + gridY) % 2 === 0 });
+                            return;
+                        }
+                        let avgDensity = getAverageDensity(x, y, w, h);
+                        avgDensity = Math.max(0, Math.min(1, avgDensity)); 
+                        const targetDepth = Math.floor((1 - avgDensity) * (subdivisions + 1));
+                        const safeTargetDepth = Math.max(0, Math.min(subdivisions, targetDepth));
+                        if (depth > safeTargetDepth) {
+                            const step = Math.pow(2, depth - 1), hw = w / 2, hh = h / 2;
+                            subdivide(x, y, hw, hh, gridX, gridY, depth - 1);
+                            subdivide(x + hw, y, hw, hh, gridX + step, gridY, depth - 1);
+                            subdivide(x, y + hh, hw, hh, gridX, gridY + step, depth - 1);
+                            subdivide(x + hw, y + hh, hw, hh, gridX + step, gridY + step, depth - 1);
+                        } else {
+                            const parityX = Math.floor(gridX / Math.pow(2, depth)), parityY = Math.floor(gridY / Math.pow(2, depth));
+                            rects.push({ x, y, w, h, gridX, gridY, depth, isBlack: (parityX + parityY) % 2 === 0 });
+                        }
+                    };
+
+                    for (let c = 0; c < Cols; c++) {
+                        for (let r = 0; r < Rows; r++) {
+                            subdivide(offsetX + c * S_max_x, offsetY + r * S_max_y, S_max_x, S_max_y, c * max_cells, r * max_cells, subdivisions);
+                        }
+                    }
+
+                    const bayer8x8 = [
+                        [ 0, 32,  8, 40,  2, 34, 10, 42],
+                        [48, 16, 56, 24, 50, 18, 58, 26],
+                        [12, 44,  4, 36, 14, 46,  6, 38],
+                        [60, 28, 52, 20, 62, 30, 54, 22],
+                        [ 3, 35, 11, 43,  1, 33,  9, 41],
+                        [51, 19, 59, 27, 49, 17, 57, 25],
+                        [15, 47,  7, 39, 13, 45,  5, 37],
+                        [63, 31, 55, 23, 61, 29, 53, 21]
+                    ].map(row => row.map(v => (v + 0.5) / 64));
+
+                    let svgCode = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" preserveAspectRatio="xMidYMid meet">\n`;
+                    let defsCode = `<defs>\n`;
+                    let hasDefs = false;
+                    for (const g of [...graphicsBlack, ...graphicsWhite]) {
+                        if (!g.isDefault && g.innerContent) {
+                            defsCode += `<g id="${g.id}">${g.innerContent}</g>\n`;
+                            hasDefs = true;
+                        }
+                    }
+                    defsCode += `</defs>\n`;
+                    if (hasDefs) svgCode += defsCode;
+                    svgCode += `<rect width="${W}" height="${H}" fill="#ffffff"/>\n`; 
+                    
+                    let elementsRendered = 0;
+                    for (const rect of rects) {
+                        let isBlack = rect.isBlack;
+                        if (invertChecker) isBlack = !isBlack;
+                        
+                        // Resolve multiple borders top-down
+                        if (borderLayers.length > 0) {
+                            const cx = Math.floor(rect.x + rect.w / 2), cy = Math.floor(rect.y + rect.h / 2);
+                            const safeX = Math.max(0, Math.min(W - 1, cx)), safeY = Math.max(0, Math.min(H - 1, cy));
+                            
+                            for (let i = borderLayers.length - 1; i >= 0; i--) {
+                                const layer = borderLayers[i];
+                                const bAlpha = layer.alphaData[safeY * W + safeX];
+                                if (bAlpha > 0) {
+                                    let borderHit = false;
+                                    if (layer.isBlurred) {
+                                        const bX = rect.gridX % 8, bY = rect.gridY % 8, threshold = bayer8x8[bY][bX];
+                                        if (bAlpha > threshold) borderHit = true;
+                                    } else { 
+                                        if (bAlpha > 0.5) borderHit = true; 
+                                    }
+                                    
+                                    if (borderHit) {
+                                        isBlack = layer.color === 'black';
+                                        break; 
+                                    }
+                                }
+                            }
+                        }
+
+                        const activeLibrary = isBlack ? graphicsBlack : graphicsWhite;
+                        let validPool = activeLibrary.filter(g => {
+                            const currentLevels = g.targetLevels || (g.targetLevel === 'all' || g.targetLevel === undefined ? [...Array(20).keys()] : [parseInt(g.targetLevel)]);
+                            return currentLevels.includes(rect.depth) && g.ratio > 0;
+                        });
+                        if (validPool.length === 0) validPool = activeLibrary.filter(g => g.isDefault);
+                        if (validPool.length === 0) validPool = [{ isDefault: true }];
+                        let selected = validPool[0];
+                        if (validPool.length > 1) {
+                            const totalRatio = validPool.reduce((sum, g) => sum + g.ratio, 0), hash = getHash(rect.gridX, rect.gridY);
+                            let target = hash * totalRatio;
+                            for (const g of validPool) { target -= g.ratio; if (target <= 0) { selected = g; break; } }
+                        }
+
+                        const baseW = rect.w + 0.8, baseH = rect.h + 0.8;
+                        const defaultBase = isBlack ? '#000000' : '#ffffff';
+                        const baseFill = selected.baseFill === undefined ? defaultBase : selected.baseFill;
+
+                        if (baseFill !== 'transparent' && baseFill !== 'none') {
+                            svgCode += `<rect x="${rect.x}" y="${rect.y}" width="${baseW}" height="${baseH}" fill="${baseFill}"/>\n`;
+                        }
+                        if (!selected.isDefault) {
+                            const overlayScale = selected.elementScale !== undefined ? selected.elementScale / 100 : 1;
+                            const gw = baseW * overlayScale, gh = baseH * overlayScale;
+                            const gx = rect.x + (baseW - gw) / 2, gy = rect.y + (baseH - gh) / 2;
+                            
+                            let origW = selected.origW;
+                            let origH = selected.origH;
+                            let minX = selected.minX || 0;
+                            let minY = selected.minY || 0;
+
+                            if (!origW || !origH) {
+                                const vbParts = selected.viewBox ? selected.viewBox.split(/[\s,]+/).map(parseFloat) : [0,0,100,100];
+                                minX = vbParts[0] || 0;
+                                minY = vbParts[1] || 0;
+                                origW = Math.max(1, vbParts[2] || 100);
+                                origH = Math.max(1, vbParts[3] || 100);
+                            }
+
+                            const scaleX = gw / origW;
+                            const scaleY = gh / origH;
+                            const scale = Math.min(scaleX, scaleY);
+                            
+                            const actualW = origW * scale;
+                            const actualH = origH * scale;
+
+                            const tx = gx + (gw - actualW) / 2 - (minX * scale);
+                            const ty = gy + (gh - actualH) / 2 - (minY * scale);
+
+                            const gFill = selected.fillColor || '#ffffff', gStrokeWidth = selected.borderSize || 0, gStrokeColor = selected.borderColor || '#000000';
+                            let styleStr = `fill="${gFill}"`;
+                            if (gStrokeWidth > 0) {
+                                let paintOrder = 'fill stroke', actualStrokeWidth = gStrokeWidth;
+                                if (selected.borderPosition === 'outside') { paintOrder = 'stroke fill'; actualStrokeWidth = gStrokeWidth * 2; }
+                                styleStr += ` stroke="${gStrokeColor}" stroke-width="${actualStrokeWidth}" paint-order="${paintOrder}" stroke-linejoin="round"`;
+                            }
+                            
+                            // Safe injection using the unified system, fallback to plain rect if no innerContent parsed
+                            if (selected.innerContent) {
+                                svgCode += `<use href="#${selected.id}" xlink:href="#${selected.id}" transform="translate(${tx}, ${ty}) scale(${scale})" ${styleStr} />\n`;
+                            } else {
+                                svgCode += `<rect x="${gx}" y="${gy}" width="${gw}" height="${gh}" ${styleStr} />\n`;
+                            }
+                        }
+                        elementsRendered++;
+                    }
+                    svgCode += `</svg>`;
+                    const blob = new Blob([svgCode], {type: 'image/svg+xml'});
+                    const url = URL.createObjectURL(blob);
+                    setPreviewUrl(oldUrl => { if(oldUrl) URL.revokeObjectURL(oldUrl); return url; });
+                    setBaseSvgCode(svgCode);
+                    setStats({ elements: elementsRendered, width: W, height: H });
+                } catch(e) { console.error("Failed to generate mesh:", e); } finally { setIsGenerating(false); }
+            };
+
+            const handleTargetSvgUpload = (e, id) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (event) => updateTargetObject(id, 'svgInput', event.target.result);
+                reader.readAsText(file);
+                e.target.value = null;
+            };
+
+            const handleBgUpload = (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (event) => setBgInput(event.target.result);
+                reader.readAsDataURL(file);
+                e.target.value = null;
+            };
+
+            // ---- GRAPHIC LIBRARY HANDLERS ----
+            const handleAddGraphic = (type) => {
+                const defaultSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" /></svg>`;
+                const parsed = parseGraphicSvgString(defaultSvg);
+                const newGraphic = {
+                    id: 'mod-' + Date.now() + '-' + Math.floor(Math.random() * 1000),
+                    isDefault: false, ratio: 100, targetLevels: [...Array(20).keys()], elementScale: 100,
+                    fillColor: type === 'black' ? '#ffffff' : '#000000',
+                    baseFill: type === 'black' ? '#000000' : '#ffffff',
+                    borderSize: 0, borderColor: '#000000', borderPosition: 'centered',
+                    svgInput: defaultSvg,
+                    ...parsed
+                };
+                if (type === 'black') setGraphicsBlack(prev => [...prev, newGraphic]);
+                else setGraphicsWhite(prev => [...prev, newGraphic]);
+            };
+
+            const handleGraphicSvgUpdate = (type, id, text) => {
+                const parsed = parseGraphicSvgString(text);
+                const setter = type === 'black' ? setGraphicsBlack : setGraphicsWhite;
+                setter(prev => prev.map(g => g.id === id ? { ...g, svgInput: text, ...parsed } : g));
+            };
+
+            const updateGraphic = (type, id, field, value) => {
+                const setter = type === 'black' ? setGraphicsBlack : setGraphicsWhite;
+                setter(prev => prev.map(g => g.id === id ? { ...g, [field]: value } : g));
+            };
+
+            const removeGraphic = (type, id) => {
+                const setter = type === 'black' ? setGraphicsBlack : setGraphicsWhite;
+                setter(prev => prev.filter(g => g.id !== id));
+            };
+
+            // ---- TARGET OBJECTS HANDLERS ----
+            const addTargetObject = () => {
+                setTargetObjects(prev => [...prev, {
+                    ...defaultTargetObject,
+                    id: 'obj-' + Date.now() + '-' + Math.random(),
+                    svgInput: '<svg></svg>'
+                }]);
+            };
+
+            const updateTargetObject = (id, field, value) => {
+                setTargetObjects(prev => prev.map(obj => obj.id === id ? { ...obj, [field]: value } : obj));
+            };
+
+            const removeTargetObject = (id) => {
+                setTargetObjects(prev => prev.filter(obj => obj.id !== id));
+            };
+
+            const downloadFinalSvg = () => {
+                if (!baseSvgCode) return;
+                const blob = new Blob([baseSvgCode], {type: 'image/svg+xml;charset=utf-8'});
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `vector-mesh-${Date.now()}.svg`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            };
+
+            const renderLibrary = (type, title, graphics) => {
+                const isDark = type === 'black';
+                return (
+                    <div className="space-y-3 mb-6">
+                        <div className="flex items-center justify-between border-b border-gray-200 pb-1">
+                            <span className="text-[11px] font-bold text-gray-600 uppercase">{title}</span>
+                        </div>
+                        <div className="space-y-3 max-h-[22rem] overflow-y-auto pr-1">
+                            {graphics.map((g, i) => (
+                                <div key={g.id} className="flex flex-col gap-3 p-3 border border-gray-200 rounded-lg bg-white shadow-sm">
+                                    <div className="flex items-center gap-3">
+                                        <div className="w-8 h-8 flex-shrink-0 bg-gray-100 rounded border border-gray-200 flex items-center justify-center overflow-hidden relative">
+                                            {(!g.isDefault && (g.baseFill === 'transparent' || !g.baseFill)) && (
+                                                <div className="absolute inset-0" style={{ backgroundImage: 'linear-gradient(45deg, #ccc 25%, transparent 25%), linear-gradient(-45deg, #ccc 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #ccc 75%), linear-gradient(-45deg, transparent 75%, #ccc 75%)', backgroundSize: '8px 8px' }} />
+                                            )}
+                                            {g.isDefault ? (
+                                                <div className="w-full h-full relative" style={{ backgroundColor: g.baseFill || (isDark ? '#000000' : '#ffffff') }} />
+                                            ) : (
+                                                <React.Fragment>
+                                                    <div className="absolute inset-0" style={{ backgroundColor: g.baseFill || (isDark ? '#000000' : '#ffffff') }} />
+                                                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                                                        <svg viewBox={g.viewBox || "0 0 100 100"} className="relative z-10" style={{ fill: g.fillColor || '#ffffff', width: `${g.elementScale ?? 100}%`, height: `${g.elementScale ?? 100}%` }}>
+                                                            <g dangerouslySetInnerHTML={{__html: g.innerContent || ''}} />
+                                                        </svg>
+                                                    </div>
+                                                </React.Fragment>
+                                            )}
+                                        </div>
+                                        <div className="flex-1 flex items-center justify-between">
+                                            <span className="text-[11px] font-bold text-gray-700 truncate">{g.isDefault ? `Default Base Square` : `Module Variation ${i}`}</span>
+                                            {!g.isDefault && (
+                                                <button onClick={() => removeGraphic(type, g.id)} className="text-gray-400 hover:text-red-500 transition-colors">
+                                                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                                                </button>
+                                            )}
+                                        </div>
+                                    </div>
+                                    <div className="flex flex-col gap-2 mt-1 border-t border-gray-100 pt-2">
+                                        
+                                        {!g.isDefault && (
+                                            <div className="mb-2">
+                                                <label className="flex items-center justify-center w-full px-2 py-1.5 border border-dashed border-gray-300 rounded cursor-pointer hover:border-blue-500 hover:bg-blue-50 transition-colors">
+                                                    <span className="text-[9px] text-gray-600 font-medium">Upload Overlay .SVG</span>
+                                                    <input type="file" accept=".svg" className="hidden" onChange={(e) => {
+                                                        const file = e.target.files[0];
+                                                        if (file) {
+                                                            const reader = new FileReader();
+                                                            reader.onload = (event) => handleGraphicSvgUpdate(type, g.id, event.target.result);
+                                                            reader.readAsText(file);
+                                                        }
+                                                        e.target.value = null;
+                                                    }} />
+                                                </label>
+                                                <textarea className="w-full mt-1.5 text-[9px] font-mono p-1.5 border border-gray-200 rounded bg-gray-50 focus:ring-1 focus:ring-blue-500 focus:outline-none resize-y" rows="2" value={g.svgInput || ''} onChange={(e) => handleGraphicSvgUpdate(type, g.id, e.target.value)} placeholder="Paste <svg> overlay code here" />
+                                            </div>
+                                        )}
+
+                                        <div className="flex flex-col gap-1.5 mb-2 border-y border-gray-100 py-3">
+                                            <div className="flex items-center justify-between">
+                                                <span className="text-[9px] text-gray-500 uppercase">Target Grid Levels</span>
+                                                <span className="text-[9px] text-gray-400">Toggle active layers</span>
+                                            </div>
+                                            <div className="flex flex-wrap gap-1">
+                                                {[...Array(subdivisions + 1)].map((_, idx) => {
+                                                    const currentLevels = g.targetLevels || (g.targetLevel === 'all' || g.targetLevel === undefined ? [...Array(20).keys()] : [parseInt(g.targetLevel)]);
+                                                    const isChecked = currentLevels.includes(idx);
+                                                    return (
+                                                        <label key={idx} className={`flex items-center justify-center w-6 h-6 rounded cursor-pointer border text-[10px] font-bold transition-colors ${isChecked ? 'bg-blue-50 border-blue-400 text-blue-700 shadow-sm' : 'bg-gray-50 border-gray-200 text-gray-400 hover:bg-gray-100'}`} title={`Level ${idx}`}>
+                                                            <input type="checkbox" className="hidden" checked={isChecked} onChange={(e) => {
+                                                                const newLevels = e.target.checked ? [...currentLevels, idx] : currentLevels.filter(l => l !== idx);
+                                                                updateGraphic(type, g.id, 'targetLevels', newLevels);
+                                                            }} />
+                                                            {idx}
+                                                        </label>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                        
+                                        <div className="grid grid-cols-2 gap-3 pt-1">
+                                            <div>
+                                                <div className="flex justify-between mb-1">
+                                                    <span className="text-[9px] text-gray-500 uppercase">Frequency</span>
+                                                    <span className="text-[9px] font-mono text-gray-500">{g.ratio}%</span>
+                                                </div>
+                                                <input type="range" min="0" max="100" value={g.ratio} onChange={(e) => updateGraphic(type, g.id, 'ratio', parseInt(e.target.value))} className="w-full h-1 bg-gray-200 rounded appearance-none cursor-pointer accent-blue-500" />
+                                            </div>
+                                            {!g.isDefault ? (
+                                                <div>
+                                                    <div className="flex justify-between mb-1">
+                                                        <span className="text-[9px] text-gray-500 uppercase">Scale Overlay</span>
+                                                        <span className="text-[9px] font-mono text-gray-500">{g.elementScale ?? 100}%</span>
+                                                    </div>
+                                                    <input type="range" min="10" max="150" value={g.elementScale ?? 100} onChange={(e) => updateGraphic(type, g.id, 'elementScale', parseInt(e.target.value))} className="w-full h-1 bg-gray-200 rounded appearance-none cursor-pointer accent-green-500" />
+                                                </div>
+                                            ) : <div />}
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-3 pt-1 border-t border-gray-100 mt-1">
+                                            {!g.isDefault && (
+                                                <div className="flex items-center justify-between">
+                                                    <span className="text-[9px] text-gray-500 uppercase">Graphic Fill</span>
+                                                    <input type="color" value={g.fillColor || '#ffffff'} onChange={(e) => updateGraphic(type, g.id, 'fillColor', e.target.value)} className="w-5 h-5 rounded cursor-pointer" />
+                                                </div>
+                                            )}
+                                            <div className={`flex items-center justify-between ${g.isDefault ? 'col-span-2' : ''}`}>
+                                                <span className="text-[9px] text-gray-500 uppercase">Base Background</span>
+                                                <div className="flex items-center gap-1.5">
+                                                    <input type="color" value={g.baseFill || (isDark ? '#000000' : '#ffffff')} onChange={(e) => updateGraphic(type, g.id, 'baseFill', e.target.value)} disabled={g.baseFill === 'transparent'} className={`w-5 h-5 rounded cursor-pointer ${g.baseFill === 'transparent' ? 'opacity-30' : ''}`} />
+                                                    <button onClick={() => updateGraphic(type, g.id, 'baseFill', g.baseFill === 'transparent' ? (isDark ? '#000000' : '#ffffff') : 'transparent')} title="Toggle Transparent Base" className={`text-[12px] font-bold ${g.baseFill === 'transparent' ? 'text-blue-500' : 'text-gray-400 hover:text-gray-700'}`}>∅</button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        {!g.isDefault && (
+                                            <div className="grid grid-cols-3 gap-2 items-center pt-1 border-t border-gray-100 mt-1">
+                                                <div className="col-span-3 flex justify-between items-center mb-1">
+                                                    <span className="text-[9px] text-gray-500 uppercase">Graphic Border</span>
+                                                    <span className="text-[9px] font-mono text-gray-500">{g.borderSize || 0}px</span>
+                                                </div>
+                                                <div className="col-span-1">
+                                                    <input type="range" min="0" max="20" step="1" value={g.borderSize || 0} onChange={(e) => updateGraphic(type, g.id, 'borderSize', parseInt(e.target.value))} className="w-full h-1 bg-gray-200 rounded appearance-none cursor-pointer accent-purple-500" />
+                                                </div>
+                                                <div className="col-span-1">
+                                                    <select value={g.borderPosition || 'outside'} onChange={(e) => updateGraphic(type, g.id, 'borderPosition', e.target.value)} className="w-full p-1 text-[9px] border border-gray-300 rounded bg-gray-50 focus:outline-none focus:ring-1 focus:ring-blue-500">
+                                                        <option value="outside">Outside</option>
+                                                        <option value="centered">Centered</option>
+                                                    </select>
+                                                </div>
+                                                <div className="col-span-1 flex justify-end">
+                                                    <input type="color" value={g.borderColor || '#000000'} onChange={(e) => updateGraphic(type, g.id, 'borderColor', e.target.value)} className="w-5 h-5 rounded cursor-pointer" />
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                        <div className="pt-2 border-t border-gray-100 flex gap-2">
+                            <button onClick={() => handleAddGraphic(type)} className="w-full flex items-center justify-center px-2 py-2 border-2 border-dashed border-gray-300 rounded-md cursor-pointer hover:border-blue-500 hover:bg-blue-50 transition-colors text-[10px] text-gray-600 font-medium">
+                                + Add a module variation
+                            </button>
+                        </div>
+                    </div>
+                );
+            };
+
+            return (
+                <div className="flex h-screen w-screen overflow-hidden bg-gray-50 text-gray-800">
+                    <div className="w-96 flex flex-col bg-white border-r border-gray-200 shadow-sm z-10 flex-shrink-0 relative">
+                        <div className="p-5 border-b border-gray-100 bg-white sticky top-0 z-20 flex justify-between items-center">
+                            <div>
+                                <h1 className="text-xl font-bold tracking-tight text-gray-900">Vector Mesh<span className="text-blue-600">.</span></h1>
+                                <p className="text-xs text-gray-500 mt-1">Quadtree Pixelation Engine</p>
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                                <label className="cursor-pointer p-2 bg-gray-50 border border-gray-200 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 text-gray-600 rounded-md transition-all" title="Load Project JSON">
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
+                                    <input type="file" accept=".json" className="hidden" onChange={importSettings} />
+                                </label>
+                                <button onClick={exportSettings} className="p-2 bg-gray-50 border border-gray-200 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 text-gray-600 rounded-md transition-all" title="Save Project JSON">
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                                </button>
+                            </div>
+                        </div>
+                        <div className="p-5 overflow-y-auto flex-1 space-y-8 pb-24">
+                            
+                            <div className="space-y-4">
+                                <div className="flex justify-between items-center">
+                                    <label className="block text-sm font-semibold text-gray-700">1. Target Layers (SVGs)</label>
+                                    <button onClick={addTargetObject} className="text-xs bg-blue-50 border border-blue-200 text-blue-600 hover:bg-blue-100 px-2.5 py-1 rounded-md font-bold shadow-sm transition-colors">+ Add Layer</button>
+                                </div>
+                                <div className="space-y-4">
+                                    {targetObjects.map((obj, index) => (
+                                        <div key={obj.id} className="border border-gray-200 rounded-lg bg-white overflow-hidden shadow-sm flex flex-col">
+                                            <div className="bg-gray-50 border-b border-gray-200 px-3 py-2 flex justify-between items-center">
+                                                <span className="text-xs font-bold text-gray-700">Layer {index + 1}</span>
+                                                {targetObjects.length > 1 && (
+                                                    <button onClick={() => removeTargetObject(obj.id)} className="text-gray-400 hover:text-red-500 transition-colors">
+                                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                                                    </button>
+                                                )}
+                                            </div>
+                                            <div className="p-3 space-y-4">
+                                                <div className="flex items-center justify-between mb-2 pb-2 border-b border-gray-100">
+                                                    <span className="text-[10px] text-gray-500 font-bold uppercase">Layer Type</span>
+                                                    <label className="flex items-center space-x-2 cursor-pointer">
+                                                        <input type="checkbox" checked={obj.isSolidFill || false} onChange={(e) => updateTargetObject(obj.id, 'isSolidFill', e.target.checked)} className="rounded text-blue-600 focus:ring-blue-500 w-3.5 h-3.5" />
+                                                        <span className="text-[10px] font-bold text-gray-600">Fill with colour</span>
+                                                    </label>
+                                                </div>
+
+                                                <div className="animate-fade-in mb-2">
+                                                    <label className="flex items-center justify-center w-full px-3 py-1.5 border border-dashed border-gray-300 rounded cursor-pointer hover:border-blue-500 hover:bg-blue-50 transition-colors">
+                                                        <span className="text-xs text-gray-600 font-medium">Upload .SVG file</span>
+                                                        <input type="file" accept=".svg" className="hidden" onChange={(e) => handleTargetSvgUpload(e, obj.id)} />
+                                                    </label>
+                                                    <textarea className="w-full mt-2 text-[10px] font-mono p-2 border border-gray-200 rounded bg-gray-50 focus:ring-1 focus:ring-blue-500 focus:outline-none resize-y" rows="2" value={obj.svgInput} onChange={(e) => updateTargetObject(obj.id, 'svgInput', e.target.value)} placeholder="...or paste raw <svg> code here" />
+                                                </div>
+
+                                                {obj.isSolidFill && (
+                                                    <div className="animate-fade-in bg-blue-50 p-2 rounded border border-blue-100">
+                                                        <span className="text-[10px] text-blue-700 font-bold uppercase block mb-1">Force Fill Color</span>
+                                                        <select className="w-full p-1.5 text-[10px] border border-blue-200 rounded bg-white focus:outline-none focus:ring-1 focus:ring-blue-500 text-blue-900" value={obj.solidFillColor || 'black'} onChange={(e) => updateTargetObject(obj.id, 'solidFillColor', e.target.value)}>
+                                                            <option value="black">Black</option>
+                                                            <option value="white">White</option>
+                                                        </select>
+                                                    </div>
+                                                )}
+                                                
+                                                <div className="pt-2 border-t border-gray-100">
+                                                    <div className="flex justify-between mb-1">
+                                                        <span className="text-[10px] text-gray-500 font-bold uppercase">Layer Scale</span>
+                                                        <span className="text-[10px] font-mono bg-gray-100 px-1 rounded">{(obj.objectScale * 100).toFixed(0)}%</span>
+                                                    </div>
+                                                    <input type="range" min="0.1" max="1.5" step="0.05" value={obj.objectScale} onChange={(e) => updateTargetObject(obj.id, 'objectScale', parseFloat(e.target.value))} className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600" />
+                                                </div>
+
+                                                <div className="grid grid-cols-2 gap-3 pt-2">
+                                                    <div>
+                                                        <span className="text-[10px] text-gray-500 font-bold uppercase block mb-1">Align H</span>
+                                                        <select className="w-full p-1.5 text-[10px] border border-gray-300 rounded bg-white focus:outline-none focus:ring-1 focus:ring-blue-500" value={obj.alignH} onChange={(e) => updateTargetObject(obj.id, 'alignH', e.target.value)}>
+                                                            <option value="left">Left</option>
+                                                            <option value="center">Center</option>
+                                                            <option value="right">Right</option>
+                                                        </select>
+                                                        <div className="mt-2">
+                                                            <div className="flex justify-between mb-1">
+                                                                <span className="text-[9px] text-gray-400">Offset X</span>
+                                                                <span className="text-[9px] font-mono">{obj.offsetX}%</span>
+                                                            </div>
+                                                            <input type="range" min="-100" max="100" step="1" value={obj.offsetX} onChange={(e) => updateTargetObject(obj.id, 'offsetX', parseInt(e.target.value))} className="w-full h-1 bg-gray-200 rounded appearance-none cursor-pointer accent-gray-500" />
+                                                        </div>
+                                                    </div>
+                                                    <div>
+                                                        <span className="text-[10px] text-gray-500 font-bold uppercase block mb-1">Align V</span>
+                                                        <select className="w-full p-1.5 text-[10px] border border-gray-300 rounded bg-white focus:outline-none focus:ring-1 focus:ring-blue-500" value={obj.alignV} onChange={(e) => updateTargetObject(obj.id, 'alignV', e.target.value)}>
+                                                            <option value="top">Top</option>
+                                                            <option value="center">Center</option>
+                                                            <option value="bottom">Bottom</option>
+                                                        </select>
+                                                        <div className="mt-2">
+                                                            <div className="flex justify-between mb-1">
+                                                                <span className="text-[9px] text-gray-400">Offset Y</span>
+                                                                <span className="text-[9px] font-mono">{obj.offsetY}%</span>
+                                                            </div>
+                                                            <input type="range" min="-100" max="100" step="1" value={obj.offsetY} onChange={(e) => updateTargetObject(obj.id, 'offsetY', parseInt(e.target.value))} className="w-full h-1 bg-gray-200 rounded appearance-none cursor-pointer accent-gray-500" />
+                                                        </div>
+                                                    </div>
+                                                </div>
+
+                                                <div className="pt-2 border-t border-gray-100">
+                                                    <label className="flex items-center space-x-2 cursor-pointer mb-2">
+                                                        <input type="checkbox" checked={obj.borderEnabled} onChange={(e) => updateTargetObject(obj.id, 'borderEnabled', e.target.checked)} className="rounded text-blue-600 focus:ring-blue-500 w-3.5 h-3.5 cursor-pointer" />
+                                                        <span className="text-[11px] text-gray-700 font-bold">Layer Border</span>
+                                                    </label>
+                                                    {obj.borderEnabled && (
+                                                        <div className="bg-gray-50 p-2 rounded border border-gray-100 space-y-3 animate-fade-in">
+                                                            {!obj.borderBlurEnabled && (
+                                                                <div>
+                                                                    <div className="flex justify-between mb-1">
+                                                                        <span className="text-[9px] text-gray-600 font-bold uppercase">Thickness</span>
+                                                                        <span className="text-[9px] font-mono bg-white px-1 border border-gray-200 rounded">{minSquareSize * Math.pow(2, Math.min(obj.borderThicknessIndex, subdivisions))}px</span>
+                                                                    </div>
+                                                                    <input type="range" min="0" max={subdivisions} step="1" value={obj.borderThicknessIndex} onChange={(e) => updateTargetObject(obj.id, 'borderThicknessIndex', parseInt(e.target.value))} className="w-full h-1 bg-gray-200 rounded appearance-none cursor-pointer accent-blue-500" />
+                                                                </div>
+                                                            )}
+                                                            <div className="grid grid-cols-2 gap-2">
+                                                                <div>
+                                                                    <span className="text-[9px] text-gray-500 font-bold uppercase block mb-1">Position</span>
+                                                                    <select className="w-full p-1 text-[10px] border border-gray-300 rounded bg-white focus:outline-none focus:ring-1 focus:ring-blue-500" value={obj.borderPosition} onChange={(e) => updateTargetObject(obj.id, 'borderPosition', e.target.value)}>
+                                                                        <option value="outside">Outside</option>
+                                                                        <option value="inside">Inside</option>
+                                                                        <option value="centered">Centered</option>
+                                                                    </select>
+                                                                </div>
+                                                                <div>
+                                                                    <span className="text-[9px] text-gray-500 font-bold uppercase block mb-1">Color</span>
+                                                                    <select className="w-full p-1 text-[10px] border border-gray-300 rounded bg-white focus:outline-none focus:ring-1 focus:ring-blue-500" value={obj.borderColour} onChange={(e) => updateTargetObject(obj.id, 'borderColour', e.target.value)}>
+                                                                        <option value="black">Black</option>
+                                                                        <option value="white">White</option>
+                                                                    </select>
+                                                                </div>
+                                                            </div>
+                                                            <div className="pt-2 border-t border-gray-200">
+                                                                <label className="flex items-center space-x-2 cursor-pointer mb-2">
+                                                                    <input type="checkbox" checked={obj.borderBlurEnabled} onChange={(e) => updateTargetObject(obj.id, 'borderBlurEnabled', e.target.checked)} className="rounded text-blue-500 focus:ring-blue-500 w-3.5 h-3.5 cursor-pointer" />
+                                                                    <span className="text-[10px] text-gray-600 font-bold">Dither Border (Blur)</span>
+                                                                </label>
+                                                                {obj.borderBlurEnabled && (
+                                                                    <div className="animate-fade-in">
+                                                                        <div className="flex justify-between mb-1">
+                                                                            <span className="text-[9px] text-gray-500 font-bold uppercase">Blur Spread</span>
+                                                                            <span className="text-[9px] font-mono bg-white px-1 border border-gray-200 rounded">{obj.borderBlurAmount}</span>
+                                                                        </div>
+                                                                        <input type="range" min="5" max="150" step="5" value={obj.borderBlurAmount} onChange={(e) => updateTargetObject(obj.id, 'borderBlurAmount', parseInt(e.target.value))} className="w-full h-1 bg-gray-200 rounded appearance-none cursor-pointer accent-blue-400" />
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                            
+                            <hr className="border-gray-100" />
+                            <div className="space-y-4">
+                                <label className="block text-sm font-semibold text-gray-700">2. Environment Map (Optional)</label>
+                                <div>
+                                    <label className="flex items-center justify-center w-full px-4 py-2 border-2 border-dashed border-gray-300 rounded-md cursor-pointer hover:border-blue-500 hover:bg-blue-50 transition-colors">
+                                        <svg className="w-5 h-5 mr-2 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                                        <span className="text-sm text-gray-600 font-medium">{bgInput ? 'Replace Texture' : 'Upload Raster Map'}</span>
+                                        <input type="file" accept="image/png, image/jpeg, image/webp" className="hidden" onChange={handleBgUpload} />
+                                    </label>
+                                </div>
+                                {bgInput && (
+                                    <div className="space-y-4 pt-2 animate-fade-in bg-gray-50 p-4 rounded-lg border border-gray-100">
+                                        <p className="text-xs font-semibold text-gray-700 border-b border-gray-200 pb-1">Input Levels</p>
+                                        <div>
+                                            <div className="flex justify-between mb-1">
+                                                <span className="text-[10px] text-gray-500 font-medium uppercase">Shadows (Black Point)</span>
+                                                <span className="text-[10px] font-mono bg-white px-1 border border-gray-200 rounded">{envShadows}%</span>
+                                            </div>
+                                            <input type="range" min="0" max="99" step="1" value={envShadows} onChange={(e) => setEnvShadows(parseInt(e.target.value))} className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-gray-800" />
+                                        </div>
+                                        <div>
+                                            <div className="flex justify-between mb-1">
+                                                <span className="text-[10px] text-gray-500 font-medium uppercase">Midtones (Gamma)</span>
+                                                <span className="text-[10px] font-mono bg-white px-1 border border-gray-200 rounded">{envMidtones.toFixed(2)}</span>
+                                            </div>
+                                            <input type="range" min="0.1" max="3.0" step="0.1" value={envMidtones} onChange={(e) => setEnvMidtones(parseFloat(e.target.value))} className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-gray-500" />
+                                        </div>
+                                        <div>
+                                            <div className="flex justify-between mb-1">
+                                                <span className="text-[10px] text-gray-500 font-medium uppercase">Highlights (White Point)</span>
+                                                <span className="text-[10px] font-mono bg-white px-1 border border-gray-200 rounded">{envHighlights}%</span>
+                                            </div>
+                                            <input type="range" min="1" max="100" step="1" value={envHighlights} onChange={(e) => setEnvHighlights(parseInt(e.target.value))} className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-gray-300" />
+                                        </div>
+                                        <p className="text-xs font-semibold text-gray-700 border-b border-gray-200 pt-2 pb-1">Output Levels</p>
+                                        <div>
+                                            <div className="flex justify-between mb-1">
+                                                <span className="text-[10px] text-gray-500 font-medium uppercase">Output Black</span>
+                                                <span className="text-[10px] font-mono bg-white px-1 border border-gray-200 rounded">{envOutputBlack}%</span>
+                                            </div>
+                                            <input type="range" min="0" max="100" step="1" value={envOutputBlack} onChange={(e) => setEnvOutputBlack(parseInt(e.target.value))} className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-gray-800" />
+                                        </div>
+                                        <div>
+                                            <div className="flex justify-between mb-1">
+                                                <span className="text-[10px] text-gray-500 font-medium uppercase">Output White</span>
+                                                <span className="text-[10px] font-mono bg-white px-1 border border-gray-200 rounded">{envOutputWhite}%</span>
+                                            </div>
+                                            <input type="range" min="0" max="100" step="1" value={envOutputWhite} onChange={(e) => setEnvOutputWhite(parseInt(e.target.value))} className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-gray-300" />
+                                        </div>
+                                        <button onClick={() => setBgInput(null)} className="text-xs text-red-600 hover:text-red-800 font-medium w-full text-center pt-3 border-t border-gray-200 mt-2">✕ Remove Background Map</button>
+                                    </div>
+                                )}
+                            </div>
+                            <hr className="border-gray-100" />
+                            <div className="space-y-4">
+                                <label className="block text-sm font-semibold text-gray-700">3. Canvas & Margins</label>
+                                <select className="w-full p-2 text-sm border border-gray-300 rounded-md bg-white focus:ring-2 focus:ring-blue-500 outline-none" value={format} onChange={(e) => setFormat(parseFloat(e.target.value))}>
+                                    {FORMATS.map(f => <option key={f.name} value={f.aspectRatio}>{f.name}</option>)}
+                                </select>
+                                <div className="grid grid-cols-2 gap-3 pt-2">
+                                    {[["marginTop", setMarginTop, "Top"], ["marginBottom", setMarginBottom, "Bottom"], ["marginLeft", setMarginLeft, "Left"], ["marginRight", setMarginRight, "Right"]].map(([key, setter, label]) => (
+                                        <div key={key}>
+                                            <div className="flex justify-between mb-1">
+                                                <span className="text-[10px] text-gray-500 font-medium uppercase">{label}</span>
+                                                <span className="text-[10px] font-mono bg-white px-1 border border-gray-200 rounded">{eval(key)}%</span>
+                                            </div>
+                                            <input type="range" min="0" max="40" step="1" value={eval(key)} onChange={(e) => setter(parseInt(e.target.value))} className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-gray-500" />
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                            <hr className="border-gray-100" />
+                            <div className="space-y-5">
+                                <label className="block text-sm font-semibold text-gray-700">4. Grid Structure</label>
+                                <div>
+                                    <div className="flex justify-between mb-1"><span className="text-xs text-gray-500 font-medium">Smallest Square Size</span><span className="text-xs font-mono bg-gray-100 px-1 rounded">{minSquareSize}px</span></div>
+                                    <input type="range" min="2" max="24" step="2" value={minSquareSize} onChange={(e) => setMinSquareSize(parseInt(e.target.value))} className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600" />
+                                </div>
+                                <div>
+                                    <div className="flex justify-between mb-1"><span className="text-xs text-gray-500 font-medium">Biggest Square Multiplier</span><span className="text-xs font-mono bg-gray-100 px-1 rounded">{Math.pow(2, subdivisions)}x</span></div>
+                                    <input type="range" min="1" max="6" step="1" value={subdivisions} onChange={(e) => setSubdivisions(parseInt(e.target.value))} className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600" />
+                                </div>
+                                <div>
+                                    <div className="flex justify-between mb-1"><span className="text-xs text-gray-500 font-medium">Mask Blur</span><span className="text-xs font-mono bg-gray-100 px-1 rounded">{transitionSpread}</span></div>
+                                    <input type="range" min="0" max="150" step="5" value={transitionSpread} onChange={(e) => setTransitionSpread(parseInt(e.target.value))} className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600" />
+                                </div>
+                                <div className="space-y-2 mt-2 border-t border-gray-100 pt-3">
+                                    <label className="flex items-center space-x-2 cursor-pointer"><input type="checkbox" checked={invertChecker} onChange={(e) => setInvertChecker(e.target.checked)} className="rounded text-blue-600 focus:ring-blue-500 w-4 h-4 cursor-pointer" /><span className="text-sm text-gray-700 font-medium">Invert Global Checker Parity</span></label>
+                                </div>
+                            </div>
+                            <hr className="border-gray-100" />
+                            <div className="space-y-4">
+                                <label className="block text-sm font-semibold text-gray-700">5. Graphics Libraries</label>
+                                {renderLibrary('black', 'Dark Modules (Primary)', graphicsBlack)}
+                                {renderLibrary('white', 'Light Modules (Secondary)', graphicsWhite)}
+                            </div>
+                        </div>
+                        <div className="absolute bottom-0 left-0 right-0 p-5 bg-white border-t border-gray-200 shadow-[0_-10px_15px_-3px_rgba(0,0,0,0.05)] z-20">
+                            <button onClick={downloadFinalSvg} disabled={!baseSvgCode || isGenerating} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2.5 px-4 rounded-md shadow transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center">
+                                <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>Download Vector SVG
+                            </button>
+                        </div>
+                    </div>
+                    <div className="flex-1 relative flex flex-col bg-[#1E1E1E] overflow-hidden min-h-0 min-w-0">
+                        <div className="absolute top-4 right-4 bg-gray-800/90 backdrop-blur-md px-4 py-2 border border-gray-700 rounded-lg shadow-lg z-40 flex gap-4 text-xs font-medium text-gray-300 pointer-events-none">
+                            <div>Output Res: <span className="text-white font-mono">{stats.width} × {stats.height}</span></div>
+                            <div className="w-px bg-gray-600"></div>
+                            <div>Modules: <span className="text-white font-mono">{stats.elements.toLocaleString()}</span></div>
+                        </div>
+                        <div className="flex-1 w-full h-full flex items-center justify-center relative p-8 md:p-12 min-h-0 min-w-0">
+                            {isGenerating && (
+                                <div className="absolute inset-0 bg-black/60 backdrop-blur-[2px] z-50 flex items-center justify-center">
+                                    <div className="bg-gray-900 p-4 rounded-xl shadow-2xl border border-gray-700 flex items-center space-x-3 text-sm font-semibold text-white">
+                                        <svg className="animate-spin h-5 w-5 text-blue-500" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                                        <span>Meshing Geometry...</span>
+                                    </div>
+                                </div>
+                            )}
+                            {previewUrl && <img src={previewUrl} className="w-auto h-auto max-w-full max-h-full object-contain shadow-[0_0_80px_rgba(255,255,255,0.05)]" alt="Preview" />}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
