@@ -50,6 +50,7 @@
 
         const defaultTargetObject = {
             id: 'obj-' + Date.now(),
+            isVisible: true,
             isSolidFill: false,
             solidFillColor: 'black',
             svgInput: defaultSVG,
@@ -125,10 +126,10 @@
             
             // Dual Custom Graphics Libraries
             const [graphicsBlack, setGraphicsBlack] = useState([
-                { id: 'default-black', isDefault: true, ratio: 100, targetLevels: [...Array(20).keys()], baseFill: '#000000' }
+                { id: 'default-black', isDefault: true, isVisible: true, ratio: 100, targetLevels: [...Array(20).keys()], baseFill: '#000000' }
             ]);
             const [graphicsWhite, setGraphicsWhite] = useState([
-                { id: 'default-white', isDefault: true, ratio: 100, targetLevels: [...Array(20).keys()], baseFill: '#ffffff' }
+                { id: 'default-white', isDefault: true, isVisible: true, ratio: 100, targetLevels: [...Array(20).keys()], baseFill: '#ffffff' }
             ]);
 
             // Canvas Setup, Margins & Grid Structure
@@ -164,8 +165,8 @@
             }, [minSquareSize, subdivisions]);
 
             const serializedGraphics = JSON.stringify({
-                b: graphicsBlack.map(g => ({id: g.id, ratio: g.ratio, targetLevels: g.targetLevels, elementScale: g.elementScale, fillColor: g.fillColor, baseFill: g.baseFill, borderSize: g.borderSize, borderColor: g.borderColor, borderPosition: g.borderPosition, svgInput: g.svgInput})),
-                w: graphicsWhite.map(g => ({id: g.id, ratio: g.ratio, targetLevels: g.targetLevels, elementScale: g.elementScale, fillColor: g.fillColor, baseFill: g.baseFill, borderSize: g.borderSize, borderColor: g.borderColor, borderPosition: g.borderPosition, svgInput: g.svgInput}))
+                b: graphicsBlack.map(g => ({id: g.id, isVisible: g.isVisible, ratio: g.ratio, targetLevels: g.targetLevels, elementScale: g.elementScale, fillColor: g.fillColor, baseFill: g.baseFill, borderSize: g.borderSize, borderColor: g.borderColor, borderPosition: g.borderPosition, svgInput: g.svgInput})),
+                w: graphicsWhite.map(g => ({id: g.id, isVisible: g.isVisible, ratio: g.ratio, targetLevels: g.targetLevels, elementScale: g.elementScale, fillColor: g.fillColor, baseFill: g.baseFill, borderSize: g.borderSize, borderColor: g.borderColor, borderPosition: g.borderPosition, svgInput: g.svgInput}))
             });
 
             const serializedTargets = JSON.stringify(targetObjects);
@@ -308,7 +309,7 @@
 
             const generateMesh = async () => {
                 // Check if there are valid layers to render
-                const hasValidLayer = targetObjects.some(t => t.isSolidFill || t.svgInput.trim());
+                const hasValidLayer = targetObjects.some(t => t.isVisible !== false && (t.isSolidFill || t.svgInput.trim()));
                 if (!hasValidLayer) return;
 
                 setIsGenerating(true);
@@ -341,12 +342,15 @@
 
                     // Load SVGs or Generate Solid Fill SVGs
                     const loadedImgs = await Promise.all(targetObjects.map(obj => {
+                        if (obj.isVisible === false) return Promise.resolve(null);
+                        
                         let svgStr = obj.svgInput?.trim();
-                        if (!svgStr) return Promise.resolve(null);
+                        if (!svgStr && !obj.isSolidFill) return Promise.resolve(null);
                         
                         if (obj.isSolidFill) {
                             const color = obj.solidFillColor || 'black';
                             try {
+                                if(!svgStr || svgStr === '') svgStr = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100"/></svg>`;
                                 const parser = new DOMParser();
                                 const doc = parser.parseFromString(svgStr, "image/svg+xml");
                                 const elements = doc.querySelectorAll('*');
@@ -421,7 +425,7 @@
                     for (let idx = 0; idx < targetObjects.length; idx++) {
                         const obj = targetObjects[idx];
                         const img = loadedImgs[idx];
-                        if (!obj.borderEnabled || !img) continue;
+                        if (!obj.borderEnabled || !img || obj.isSolidFill) continue;
 
                         const { drawW, drawH, dx, dy } = getObjTransform(obj, img, innerW, innerH, offsetX, offsetY);
                         const objBorderAlpha = new Float32Array(W * H);
@@ -614,10 +618,11 @@
 
                         const activeLibrary = isBlack ? graphicsBlack : graphicsWhite;
                         let validPool = activeLibrary.filter(g => {
+                            if (g.isVisible === false) return false;
                             const currentLevels = g.targetLevels || (g.targetLevel === 'all' || g.targetLevel === undefined ? [...Array(20).keys()] : [parseInt(g.targetLevel)]);
                             return currentLevels.includes(rect.depth) && g.ratio > 0;
                         });
-                        if (validPool.length === 0) validPool = activeLibrary.filter(g => g.isDefault);
+                        if (validPool.length === 0) validPool = activeLibrary.filter(g => g.isDefault && g.isVisible !== false);
                         if (validPool.length === 0) validPool = [{ isDefault: true }];
                         let selected = validPool[0];
                         if (validPool.length > 1) {
@@ -669,7 +674,6 @@
                                 styleStr += ` stroke="${gStrokeColor}" stroke-width="${actualStrokeWidth}" paint-order="${paintOrder}" stroke-linejoin="round"`;
                             }
                             
-                            // Safe injection using the unified system, fallback to plain rect if no innerContent parsed
                             if (selected.innerContent) {
                                 svgCode += `<use href="#${selected.id}" xlink:href="#${selected.id}" transform="translate(${tx}, ${ty}) scale(${scale})" ${styleStr} />\n`;
                             } else {
@@ -711,7 +715,7 @@
                 const parsed = parseGraphicSvgString(defaultSvg);
                 const newGraphic = {
                     id: 'mod-' + Date.now() + '-' + Math.floor(Math.random() * 1000),
-                    isDefault: false, ratio: 100, targetLevels: [...Array(20).keys()], elementScale: 100,
+                    isDefault: false, isVisible: true, ratio: 100, targetLevels: [...Array(20).keys()], elementScale: 100,
                     fillColor: type === 'black' ? '#ffffff' : '#000000',
                     baseFill: type === 'black' ? '#000000' : '#ffffff',
                     borderSize: 0, borderColor: '#000000', borderPosition: 'centered',
@@ -840,8 +844,17 @@
                                                 </React.Fragment>
                                             )}
                                         </div>
-                                        <div className="flex-1 flex items-center justify-between">
-                                            <span className="text-[11px] font-bold text-gray-700 truncate">{g.isDefault ? `Default Base Square` : `Module Variation ${i}`}</span>
+                                        <div className="flex-1 flex items-center justify-between ml-2">
+                                            <div className="flex items-center gap-2">
+                                                <button onClick={() => updateGraphic(type, g.id, 'isVisible', g.isVisible === false ? true : false)} className={`focus:outline-none transition-colors ${g.isVisible === false ? 'text-gray-400 hover:text-gray-600' : 'text-blue-500 hover:text-blue-600'}`} title={g.isVisible === false ? "Show module" : "Hide module"}>
+                                                    {g.isVisible === false ? (
+                                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" /></svg>
+                                                    ) : (
+                                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+                                                    )}
+                                                </button>
+                                                <span className="text-[11px] font-bold text-gray-700 truncate">{g.isDefault ? `Default Base Square` : `Module Variation ${i}`}</span>
+                                            </div>
                                             {!g.isDefault && (
                                                 <button onClick={() => removeGraphic(type, g.id)} className="text-gray-400 hover:text-red-500 transition-colors">
                                                     <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
@@ -849,7 +862,7 @@
                                             )}
                                         </div>
                                     </div>
-                                    <div className="flex flex-col gap-2 mt-1 border-t border-gray-100 pt-2">
+                                    <div className={`flex flex-col gap-2 mt-1 border-t border-gray-100 pt-2 transition-opacity ${g.isVisible === false ? 'opacity-40 grayscale' : ''}`}>
                                         
                                         {!g.isDefault && (
                                             <div className="mb-2">
@@ -986,14 +999,23 @@
                                     {targetObjects.map((obj, index) => (
                                         <div key={obj.id} className="border border-gray-200 rounded-lg bg-white overflow-hidden shadow-sm flex flex-col">
                                             <div className="bg-gray-50 border-b border-gray-200 px-3 py-2 flex justify-between items-center">
-                                                <span className="text-xs font-bold text-gray-700">Layer {index + 1}</span>
+                                                <div className="flex items-center gap-2">
+                                                    <button onClick={() => updateTargetObject(obj.id, 'isVisible', obj.isVisible === false ? true : false)} className={`focus:outline-none transition-colors ${obj.isVisible === false ? 'text-gray-400 hover:text-gray-600' : 'text-blue-500 hover:text-blue-600'}`} title={obj.isVisible === false ? "Show layer" : "Hide layer"}>
+                                                        {obj.isVisible === false ? (
+                                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" /></svg>
+                                                        ) : (
+                                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+                                                        )}
+                                                    </button>
+                                                    <span className="text-xs font-bold text-gray-700">Layer {index + 1}</span>
+                                                </div>
                                                 {targetObjects.length > 1 && (
                                                     <button onClick={() => removeTargetObject(obj.id)} className="text-gray-400 hover:text-red-500 transition-colors">
                                                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
                                                     </button>
                                                 )}
                                             </div>
-                                            <div className="p-3 space-y-4">
+                                            <div className={`p-3 space-y-4 transition-opacity ${obj.isVisible === false ? 'opacity-40 grayscale' : ''}`}>
                                                 <div className="flex items-center justify-between mb-2 pb-2 border-b border-gray-100">
                                                     <span className="text-[10px] text-gray-500 font-bold uppercase">Layer Type</span>
                                                     <label className="flex items-center space-x-2 cursor-pointer">
@@ -1002,21 +1024,21 @@
                                                     </label>
                                                 </div>
 
-                                                <div className="animate-fade-in mb-2">
-                                                    <label className="flex items-center justify-center w-full px-3 py-1.5 border border-dashed border-gray-300 rounded cursor-pointer hover:border-blue-500 hover:bg-blue-50 transition-colors">
-                                                        <span className="text-xs text-gray-600 font-medium">Upload .SVG file</span>
-                                                        <input type="file" accept=".svg" className="hidden" onChange={(e) => handleTargetSvgUpload(e, obj.id)} />
-                                                    </label>
-                                                    <textarea className="w-full mt-2 text-[10px] font-mono p-2 border border-gray-200 rounded bg-gray-50 focus:ring-1 focus:ring-blue-500 focus:outline-none resize-y" rows="2" value={obj.svgInput} onChange={(e) => updateTargetObject(obj.id, 'svgInput', e.target.value)} placeholder="...or paste raw <svg> code here" />
-                                                </div>
-
-                                                {obj.isSolidFill && (
+                                                {obj.isSolidFill ? (
                                                     <div className="animate-fade-in bg-blue-50 p-2 rounded border border-blue-100">
                                                         <span className="text-[10px] text-blue-700 font-bold uppercase block mb-1">Force Fill Color</span>
                                                         <select className="w-full p-1.5 text-[10px] border border-blue-200 rounded bg-white focus:outline-none focus:ring-1 focus:ring-blue-500 text-blue-900" value={obj.solidFillColor || 'black'} onChange={(e) => updateTargetObject(obj.id, 'solidFillColor', e.target.value)}>
                                                             <option value="black">Black</option>
                                                             <option value="white">White</option>
                                                         </select>
+                                                    </div>
+                                                ) : (
+                                                    <div className="animate-fade-in mb-2">
+                                                        <label className="flex items-center justify-center w-full px-3 py-1.5 border border-dashed border-gray-300 rounded cursor-pointer hover:border-blue-500 hover:bg-blue-50 transition-colors">
+                                                            <span className="text-xs text-gray-600 font-medium">Upload .SVG file</span>
+                                                            <input type="file" accept=".svg" className="hidden" onChange={(e) => handleTargetSvgUpload(e, obj.id)} />
+                                                        </label>
+                                                        <textarea className="w-full mt-2 text-[10px] font-mono p-2 border border-gray-200 rounded bg-gray-50 focus:ring-1 focus:ring-blue-500 focus:outline-none resize-y" rows="2" value={obj.svgInput} onChange={(e) => updateTargetObject(obj.id, 'svgInput', e.target.value)} placeholder="...or paste raw <svg> code here" />
                                                     </div>
                                                 )}
                                                 
