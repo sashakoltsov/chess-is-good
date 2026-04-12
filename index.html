@@ -134,6 +134,8 @@
 
             // Canvas Setup, Margins & Grid Structure
             const [format, setFormat] = useState(FORMATS[0].aspectRatio);
+            const [customW, setCustomW] = useState(1080);
+            const [customH, setCustomH] = useState(1080);
             const [marginTop, setMarginTop] = useState(10);
             const [marginBottom, setMarginBottom] = useState(10);
             const [marginLeft, setMarginLeft] = useState(10);
@@ -179,7 +181,7 @@
             }, [
                 serializedTargets, bgInput, coreModuleIndex, envShadows, envHighlights, envMidtones, envOutputBlack, envOutputWhite,
                 marginTop, marginBottom, marginLeft, marginRight,
-                format, baseResolution, minSquareSize, subdivisions, 
+                format, customW, customH, baseResolution, minSquareSize, subdivisions, 
                 transitionSpread, invertChecker, transitionCurve,
                 serializedGraphics
             ]);
@@ -187,7 +189,7 @@
             const exportSettings = () => {
                 const config = {
                     targetObjects, bgInput, envShadows, envHighlights, envMidtones, envOutputBlack, envOutputWhite,
-                    graphicsBlack, graphicsWhite, format, marginTop, marginBottom,
+                    graphicsBlack, graphicsWhite, format, customW, customH, marginTop, marginBottom,
                     marginLeft, marginRight, baseResolution, minSquareSize,
                     subdivisions, transitionSpread, invertChecker, transitionCurve, pngResolution
                 };
@@ -236,6 +238,8 @@
                         if (config.graphicsBlack !== undefined) setGraphicsBlack(normalizeGraphics(config.graphicsBlack));
                         if (config.graphicsWhite !== undefined) setGraphicsWhite(normalizeGraphics(config.graphicsWhite));
                         if (config.format !== undefined) setFormat(config.format);
+                        if (config.customW !== undefined) setCustomW(config.customW);
+                        if (config.customH !== undefined) setCustomH(config.customH);
                         if (config.marginTop !== undefined) setMarginTop(config.marginTop);
                         if (config.marginBottom !== undefined) setMarginBottom(config.marginBottom);
                         if (config.marginLeft !== undefined) setMarginLeft(config.marginLeft);
@@ -316,8 +320,8 @@
                 await new Promise(r => setTimeout(r, 10));
 
                 try {
-                    const W = Math.round(baseResolution);
-                    const H = Math.round(baseResolution / format);
+                    const W = format === 'custom' ? Math.max(10, customW) : Math.round(baseResolution);
+                    const H = format === 'custom' ? Math.max(10, customH) : Math.round(baseResolution / format);
                     const shortSide = Math.min(W, H); 
                     
                     const pxMarginLeft = Math.round(shortSide * (marginLeft / 100));
@@ -776,14 +780,16 @@
                 if (!baseSvgCode) return;
                 
                 let exportW, exportH;
-                if (format >= 1) { 
+                const activeFormat = format === 'custom' ? (customW / Math.max(1, customH)) : format;
+
+                if (activeFormat >= 1) { 
                     // Landscape or Square: H is shorter side
                     exportH = pngResolution;
-                    exportW = Math.round(pngResolution * format);
+                    exportW = Math.round(pngResolution * activeFormat);
                 } else { 
                     // Portrait: W is shorter side
                     exportW = pngResolution;
-                    exportH = Math.round(pngResolution / format);
+                    exportH = Math.round(pngResolution / activeFormat);
                 }
 
                 const canvas = document.createElement('canvas');
@@ -1196,10 +1202,25 @@
                             <hr className="border-gray-100" />
                             <div className="space-y-4">
                                 <label className="block text-sm font-semibold text-gray-700">3. Canvas & Margins</label>
-                                <select className="w-full p-2 text-sm border border-gray-300 rounded-md bg-white focus:ring-2 focus:ring-blue-500 outline-none" value={format} onChange={(e) => setFormat(parseFloat(e.target.value))}>
+                                <select className="w-full p-2 text-sm border border-gray-300 rounded-md bg-white focus:ring-2 focus:ring-blue-500 outline-none" value={format} onChange={(e) => setFormat(e.target.value === 'custom' ? 'custom' : parseFloat(e.target.value))}>
                                     {FORMATS.map(f => <option key={f.name} value={f.aspectRatio}>{f.name}</option>)}
+                                    <option value="custom">Custom Dimensions (px)</option>
                                 </select>
-                                <div className="grid grid-cols-2 gap-3 pt-2">
+                                
+                                {format === 'custom' && (
+                                    <div className="grid grid-cols-2 gap-3 pt-2">
+                                        <div>
+                                            <span className="text-[10px] text-gray-500 font-bold uppercase block mb-1">Width (px)</span>
+                                            <input type="number" value={customW} onChange={(e) => setCustomW(parseInt(e.target.value) || 0)} className="w-full p-1.5 text-xs border border-gray-300 rounded bg-white focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                                        </div>
+                                        <div>
+                                            <span className="text-[10px] text-gray-500 font-bold uppercase block mb-1">Height (px)</span>
+                                            <input type="number" value={customH} onChange={(e) => setCustomH(parseInt(e.target.value) || 0)} className="w-full p-1.5 text-xs border border-gray-300 rounded bg-white focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                                        </div>
+                                    </div>
+                                )}
+
+                                <div className="grid grid-cols-2 gap-3 pt-3 border-t border-gray-100 mt-3">
                                     {[["marginTop", setMarginTop, "Top"], ["marginBottom", setMarginBottom, "Bottom"], ["marginLeft", setMarginLeft, "Left"], ["marginRight", setMarginRight, "Right"]].map(([key, setter, label]) => (
                                         <div key={key}>
                                             <div className="flex justify-between mb-1">
