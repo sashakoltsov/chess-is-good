@@ -35,7 +35,7 @@
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useEffect } = React;
+        const { useState, useEffect, useRef } = React;
 
         const defaultSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
             <circle cx="100" cy="100" r="75" fill="black"/>
@@ -83,6 +83,33 @@
             borderColour: 'black',
             borderBlurEnabled: false,
             borderBlurAmount: 25
+        };
+
+        const ensureSvgDimensions = (svgStr) => {
+            if (!svgStr || !svgStr.includes('<svg')) return svgStr;
+            try {
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(svgStr, "image/svg+xml");
+                const svgEl = doc.documentElement;
+                if (svgEl.tagName.toLowerCase() !== 'svg') return svgStr;
+
+                let w = svgEl.getAttribute('width');
+                let h = svgEl.getAttribute('height');
+                const vb = svgEl.getAttribute('viewBox');
+
+                // If dimensions are missing or relative (%), force absolute coordinates using the viewBox 
+                // Prevents browser defaults (300x150) from squashing the loaded SVG
+                if ((!w || !h || w.includes('%') || h.includes('%')) && vb) {
+                    const parts = vb.split(/[\s,]+/).map(parseFloat);
+                    if (parts.length >= 4) {
+                        svgEl.setAttribute('width', parts[2]);
+                        svgEl.setAttribute('height', parts[3]);
+                    }
+                }
+                return new XMLSerializer().serializeToString(doc);
+            } catch (e) {
+                return svgStr;
+            }
         };
 
         const parseGraphicSvgString = (text) => {
@@ -188,15 +215,19 @@
             const [transitionSpread, setTransitionSpread] = useState(25);
             const [invertChecker, setInvertChecker] = useState(false);
             const [transitionCurve, setTransitionCurve] = useState(1.0);
-
-            // Export Settings
+            
+            // Preview & Export State
+            const [fastPreview, setFastPreview] = useState(true);
             const [pngResolution, setPngResolution] = useState(2000);
-
-            // Output State
             const [previewUrl, setPreviewUrl] = useState(null);
             const [baseSvgCode, setBaseSvgCode] = useState("");
             const [isGenerating, setIsGenerating] = useState(false);
             const [stats, setStats] = useState({ elements: 0, width: 0, height: 0 });
+
+            // History Stack
+            const [history, setHistory] = useState([]);
+            const [historyIndex, setHistoryIndex] = useState(-1);
+            const isUndoRedoRef = useRef(false);
 
             const safeCoreIndex = Math.min(coreModuleIndex, subdivisions);
 
@@ -208,25 +239,82 @@
                 })));
             }, [minSquareSize, subdivisions]);
 
-            const serializedGraphics = JSON.stringify({
-                b: graphicsBlack.map(g => ({id: g.id, isVisible: g.isVisible, ratio: g.ratio, targetLevels: g.targetLevels, elementScale: g.elementScale, fillColor: g.fillColor, baseFill: g.baseFill, borderSize: g.borderSize, borderColor: g.borderColor, borderPosition: g.borderPosition, svgInput: g.svgInput})),
-                w: graphicsWhite.map(g => ({id: g.id, isVisible: g.isVisible, ratio: g.ratio, targetLevels: g.targetLevels, elementScale: g.elementScale, fillColor: g.fillColor, baseFill: g.baseFill, borderSize: g.borderSize, borderColor: g.borderColor, borderPosition: g.borderPosition, svgInput: g.svgInput}))
-            });
+            // Serialize current state for History
+            const currentStateObj = {
+                targetObjects, bgInput, envShadows, envHighlights, envMidtones, envOutputBlack, envOutputWhite,
+                graphicsBlack, graphicsWhite, format, customW, customH, marginTop, marginBottom,
+                marginLeft, marginRight, baseResolution, minSquareSize, subdivisions, transitionSpread, invertChecker, transitionCurve
+            };
+            const currentStateJson = JSON.stringify(currentStateObj);
 
-            const serializedTargets = JSON.stringify(targetObjects);
-            
             useEffect(() => {
                 const timer = setTimeout(() => {
-                    generateMesh();
+                    updatePreview();
+
+                    // Push to history stack
+                    if (isUndoRedoRef.current) {
+                        isUndoRedoRef.current = false;
+                    } else {
+                        setHistory(prev => {
+                            const newHistory = prev.slice(0, historyIndex + 1);
+                            if (newHistory.length > 0 && newHistory[newHistory.length - 1] === currentStateJson) {
+                                return newHistory; // No change
+                            }
+                            newHistory.push(currentStateJson);
+                            if (newHistory.length > 50) newHistory.shift(); // Keep last 50 states
+                            return newHistory;
+                        });
+                        setHistoryIndex(prev => {
+                            const newIndex = prev + 1;
+                            return newIndex > 49 ? 49 : newIndex;
+                        });
+                    }
                 }, 300);
                 return () => clearTimeout(timer);
-            }, [
-                serializedTargets, bgInput, coreModuleIndex, envShadows, envHighlights, envMidtones, envOutputBlack, envOutputWhite,
-                marginTop, marginBottom, marginLeft, marginRight,
-                format, customW, customH, baseResolution, minSquareSize, subdivisions, 
-                transitionSpread, invertChecker, transitionCurve,
-                serializedGraphics
-            ]);
+            }, [currentStateJson, fastPreview]);
+
+            const applyState = (config) => {
+                if (config.targetObjects !== undefined) setTargetObjects(config.targetObjects);
+                if (config.bgInput !== undefined) setBgInput(config.bgInput);
+                if (config.envShadows !== undefined) setEnvShadows(config.envShadows);
+                if (config.envHighlights !== undefined) setEnvHighlights(config.envHighlights);
+                if (config.envMidtones !== undefined) setEnvMidtones(config.envMidtones);
+                if (config.envOutputBlack !== undefined) setEnvOutputBlack(config.envOutputBlack);
+                if (config.envOutputWhite !== undefined) setEnvOutputWhite(config.envOutputWhite);
+                if (config.graphicsBlack !== undefined) setGraphicsBlack(config.graphicsBlack);
+                if (config.graphicsWhite !== undefined) setGraphicsWhite(config.graphicsWhite);
+                if (config.format !== undefined) setFormat(config.format);
+                if (config.customW !== undefined) setCustomW(config.customW);
+                if (config.customH !== undefined) setCustomH(config.customH);
+                if (config.marginTop !== undefined) setMarginTop(config.marginTop);
+                if (config.marginBottom !== undefined) setMarginBottom(config.marginBottom);
+                if (config.marginLeft !== undefined) setMarginLeft(config.marginLeft);
+                if (config.marginRight !== undefined) setMarginRight(config.marginRight);
+                if (config.baseResolution !== undefined) setBaseResolution(config.baseResolution);
+                if (config.minSquareSize !== undefined) setMinSquareSize(config.minSquareSize);
+                if (config.subdivisions !== undefined) setSubdivisions(config.subdivisions);
+                if (config.transitionSpread !== undefined) setTransitionSpread(config.transitionSpread);
+                if (config.invertChecker !== undefined) setInvertChecker(config.invertChecker);
+                if (config.transitionCurve !== undefined) setTransitionCurve(config.transitionCurve);
+            };
+
+            const undo = () => {
+                if (historyIndex > 0) {
+                    isUndoRedoRef.current = true;
+                    const newIndex = historyIndex - 1;
+                    setHistoryIndex(newIndex);
+                    applyState(JSON.parse(history[newIndex]));
+                }
+            };
+
+            const redo = () => {
+                if (historyIndex < history.length - 1) {
+                    isUndoRedoRef.current = true;
+                    const newIndex = historyIndex + 1;
+                    setHistoryIndex(newIndex);
+                    applyState(JSON.parse(history[newIndex]));
+                }
+            };
 
             const exportSettings = () => {
                 const config = {
@@ -316,12 +404,16 @@
                     img.onload = () => resolve(img);
                     img.onerror = () => resolve(null);
                     if (isSvg && srcStr.startsWith('<svg')) {
-                        const blob = new Blob([srcStr], {type: 'image/svg+xml'});
+                        const fixedSvgStr = ensureSvgDimensions(srcStr);
+                        const blob = new Blob([fixedSvgStr], {type: 'image/svg+xml'});
                         img.src = URL.createObjectURL(blob);
                     } else if (srcStr.startsWith('data:')) {
                         img.src = srcStr;
                     } else if (isSvg) {
-                        try { img.src = "data:image/svg+xml;base64," + btoa(srcStr); } 
+                        try { 
+                            const fixedSvgStr = ensureSvgDimensions(srcStr);
+                            img.src = "data:image/svg+xml;base64," + btoa(fixedSvgStr); 
+                        } 
                         catch(e) { resolve(null); }
                     } else {
                         img.src = srcStr;
@@ -392,419 +484,448 @@
                 return { drawW, drawH, dx, dy };
             };
 
-            const generateMesh = async () => {
-                setIsGenerating(true);
-                await new Promise(r => setTimeout(r, 10));
+            const createMesh = async (isDraft) => {
+                const hasValidLayer = targetObjects.some(t => t.isVisible !== false && ((t.inputType === 'image' && t.imageInput) || (t.inputType !== 'image' && t.svgInput?.trim())));
+                if (!hasValidLayer && !bgInput) return null;
 
-                try {
-                    const W = format === 'custom' ? Math.max(10, customW) : Math.round(baseResolution);
-                    const H = format === 'custom' ? Math.max(10, customH) : Math.round(baseResolution / format);
-                    const shortSide = Math.min(W, H); 
+                await new Promise(r => setTimeout(r, 10)); // Yield to paint UI
+
+                const W = format === 'custom' ? Math.max(10, customW) : Math.round(baseResolution);
+                const H = format === 'custom' ? Math.max(10, customH) : Math.round(baseResolution / format);
+                const shortSide = Math.min(W, H); 
+                
+                const pxMarginLeft = Math.round(shortSide * (marginLeft / 100));
+                const pxMarginRight = Math.round(shortSide * (marginRight / 100));
+                const pxMarginTop = Math.round(shortSide * (marginTop / 100));
+                const pxMarginBottom = Math.round(shortSide * (marginBottom / 100));
+
+                const innerW = Math.max(10, W - pxMarginLeft - pxMarginRight);
+                const innerH = Math.max(10, H - pxMarginTop - pxMarginBottom);
+
+                const ideal_S_max = minSquareSize * Math.pow(2, subdivisions);
+                const Cols = Math.max(1, Math.round(innerW / ideal_S_max));
+                const Rows = Math.max(1, Math.round(innerH / ideal_S_max));
+                
+                const S_max_x = innerW / Cols;
+                const S_max_y = innerH / Rows;
+                
+                const offsetX = pxMarginLeft;
+                const offsetY = pxMarginTop;
+
+                const adaptedMinSize = ((S_max_x + S_max_y) / 2) / Math.pow(2, subdivisions);
+
+                // Load Data (SVG or Image)
+                const loadedImgs = await Promise.all(targetObjects.map(obj => {
+                    if (obj.isVisible === false) return Promise.resolve(null);
+                    if (obj.inputType === 'image') {
+                        if (!obj.imageInput) return Promise.resolve(null);
+                        return loadImage(obj.imageInput, false);
+                    } else {
+                        let svgStr = obj.svgInput?.trim();
+                        if (!svgStr) return Promise.resolve(null);
+                        return loadImage(svgStr, true);
+                    }
+                }));
+
+                const imgB = await loadImage(bgInput, false);
+
+                // Create idMap (Stores the topmost layer ID at every pixel to guide Process Modes)
+                const idCanvas = document.createElement('canvas');
+                idCanvas.width = W; idCanvas.height = H;
+                const idCtx = idCanvas.getContext('2d', { willReadFrequently: true });
+                
+                for (let idx = targetObjects.length - 1; idx >= 0; idx--) {
+                    const obj = targetObjects[idx];
+                    const img = loadedImgs[idx];
+                    if (!img || obj.isVisible === false) continue;
+                    const { drawW, drawH, dx, dy } = getObjTransform(obj, img, innerW, innerH, offsetX, offsetY);
                     
-                    const pxMarginLeft = Math.round(shortSide * (marginLeft / 100));
-                    const pxMarginRight = Math.round(shortSide * (marginRight / 100));
-                    const pxMarginTop = Math.round(shortSide * (marginTop / 100));
-                    const pxMarginBottom = Math.round(shortSide * (marginBottom / 100));
-
-                    const innerW = Math.max(10, W - pxMarginLeft - pxMarginRight);
-                    const innerH = Math.max(10, H - pxMarginTop - pxMarginBottom);
-
-                    const ideal_S_max = minSquareSize * Math.pow(2, subdivisions);
-                    const Cols = Math.max(1, Math.round(innerW / ideal_S_max));
-                    const Rows = Math.max(1, Math.round(innerH / ideal_S_max));
+                    const tempC = document.createElement('canvas');
+                    tempC.width = W; tempC.height = H;
+                    const tCtx = tempC.getContext('2d');
+                    tCtx.drawImage(img, dx, dy, drawW, drawH);
                     
-                    const S_max_x = innerW / Cols;
-                    const S_max_y = innerH / Rows;
+                    tCtx.globalCompositeOperation = 'source-in';
+                    tCtx.fillStyle = `rgb(${idx + 1}, 0, 0)`; // Red channel tracks layer ID + 1
+                    tCtx.fillRect(0, 0, W, H);
                     
-                    const offsetX = pxMarginLeft;
-                    const offsetY = pxMarginTop;
+                    idCtx.drawImage(tempC, 0, 0);
+                }
+                const idMap = idCtx.getImageData(0, 0, W, H).data;
 
-                    const adaptedMinSize = ((S_max_x + S_max_y) / 2) / Math.pow(2, subdivisions);
+                // Create Visual Canvas (for Density and Dither sampling)
+                const visCanvas = document.createElement('canvas');
+                visCanvas.width = W; visCanvas.height = H;
+                const visCtx = visCanvas.getContext('2d', { willReadFrequently: true });
+                
+                for (let idx = targetObjects.length - 1; idx >= 0; idx--) {
+                    const obj = targetObjects[idx];
+                    const img = loadedImgs[idx];
+                    if (!img || obj.isVisible === false) continue;
+                    const { drawW, drawH, dx, dy } = getObjTransform(obj, img, innerW, innerH, offsetX, offsetY);
+                    visCtx.drawImage(img, dx, dy, drawW, drawH);
+                }
+                const imgDataVisual = visCtx.getImageData(0, 0, W, H).data;
+                const imgDataA = imgDataVisual; // Re-use alpha for density quadtree
 
-                    // Load Data (SVG or Image)
-                    const loadedImgs = await Promise.all(targetObjects.map(obj => {
-                        if (obj.isVisible === false) return Promise.resolve(null);
-                        if (obj.inputType === 'image') {
-                            if (!obj.imageInput) return Promise.resolve(null);
-                            return loadImage(obj.imageInput, false);
-                        } else {
-                            let svgStr = obj.svgInput?.trim();
-                            if (!svgStr) return Promise.resolve(null);
-                            return loadImage(svgStr, true);
-                        }
-                    }));
-
-                    const imgB = await loadImage(bgInput, false);
-
-                    // Create idMap (Stores the topmost layer ID at every pixel to guide Process Modes)
-                    const idCanvas = document.createElement('canvas');
-                    idCanvas.width = W; idCanvas.height = H;
-                    const idCtx = idCanvas.getContext('2d', { willReadFrequently: true });
-                    
+                const canvas = document.createElement('canvas');
+                canvas.width = W;
+                canvas.height = H;
+                const ctx = canvas.getContext('2d', { willReadFrequently: true });
+                
+                // Draw Blurred Mask (imgDataMask)
+                ctx.clearRect(0, 0, W, H);
+                if (transitionSpread > 0) {
+                    ctx.filter = `blur(${transitionSpread}px)`;
                     for (let idx = targetObjects.length - 1; idx >= 0; idx--) {
                         const obj = targetObjects[idx];
                         const img = loadedImgs[idx];
                         if (!img || obj.isVisible === false) continue;
                         const { drawW, drawH, dx, dy } = getObjTransform(obj, img, innerW, innerH, offsetX, offsetY);
-                        
+                        ctx.drawImage(img, dx, dy, drawW, drawH);
+                    }
+                    ctx.filter = 'none';
+                } else {
+                    for (let idx = targetObjects.length - 1; idx >= 0; idx--) {
+                        const obj = targetObjects[idx];
+                        const img = loadedImgs[idx];
+                        if (!img || obj.isVisible === false) continue;
+                        const { drawW, drawH, dx, dy } = getObjTransform(obj, img, innerW, innerH, offsetX, offsetY);
+                        ctx.drawImage(img, dx, dy, drawW, drawH);
+                    }
+                }
+                const imgDataMask = ctx.getImageData(0, 0, W, H).data;
+
+                // Draw Environment Background
+                ctx.clearRect(0, 0, W, H);
+                if (imgB) {
+                    ctx.drawImage(imgB, offsetX, offsetY, innerW, innerH);
+                } 
+                const imgDataB = ctx.getImageData(0, 0, W, H).data;
+
+                // Compute per-object borders
+                const borderLayers = [];
+                for (let idx = 0; idx < targetObjects.length; idx++) {
+                    const obj = targetObjects[idx];
+                    const img = loadedImgs[idx];
+                    if (!obj.borderEnabled || !img) continue;
+
+                    const { drawW, drawH, dx, dy } = getObjTransform(obj, img, innerW, innerH, offsetX, offsetY);
+                    const objBorderAlpha = new Float32Array(W * H);
+                    
+                    ctx.clearRect(0, 0, W, H);
+                    ctx.drawImage(img, dx, dy, drawW, drawH);
+                    const singleImgData = ctx.getImageData(0, 0, W, H).data;
+
+                    const getAlphaMask = (invert, blurRadius) => {
                         const tempC = document.createElement('canvas');
                         tempC.width = W; tempC.height = H;
                         const tCtx = tempC.getContext('2d');
-                        tCtx.drawImage(img, dx, dy, drawW, drawH);
-                        
-                        tCtx.globalCompositeOperation = 'source-in';
-                        tCtx.fillStyle = `rgb(${idx + 1}, 0, 0)`; // Red channel tracks layer ID + 1
-                        tCtx.fillRect(0, 0, W, H);
-                        
-                        idCtx.drawImage(tempC, 0, 0);
-                    }
-                    const idMap = idCtx.getImageData(0, 0, W, H).data;
-
-                    // Create Visual Canvas (for Density and Dither sampling)
-                    const visCanvas = document.createElement('canvas');
-                    visCanvas.width = W; visCanvas.height = H;
-                    const visCtx = visCanvas.getContext('2d', { willReadFrequently: true });
-                    
-                    for (let idx = targetObjects.length - 1; idx >= 0; idx--) {
-                        const obj = targetObjects[idx];
-                        const img = loadedImgs[idx];
-                        if (!img || obj.isVisible === false) continue;
-                        const { drawW, drawH, dx, dy } = getObjTransform(obj, img, innerW, innerH, offsetX, offsetY);
-                        visCtx.drawImage(img, dx, dy, drawW, drawH);
-                    }
-                    const imgDataVisual = visCtx.getImageData(0, 0, W, H).data;
-                    const imgDataA = imgDataVisual; // Re-use alpha for density quadtree
-
-                    const canvas = document.createElement('canvas');
-                    canvas.width = W;
-                    canvas.height = H;
-                    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-                    
-                    // Draw Blurred Mask (imgDataMask)
-                    ctx.clearRect(0, 0, W, H);
-                    if (transitionSpread > 0) {
-                        ctx.filter = `blur(${transitionSpread}px)`;
-                        for (let idx = targetObjects.length - 1; idx >= 0; idx--) {
-                            const obj = targetObjects[idx];
-                            const img = loadedImgs[idx];
-                            if (!img || obj.isVisible === false) continue;
-                            const { drawW, drawH, dx, dy } = getObjTransform(obj, img, innerW, innerH, offsetX, offsetY);
-                            ctx.drawImage(img, dx, dy, drawW, drawH);
+                        if (invert) {
+                            tCtx.fillStyle = 'black'; tCtx.fillRect(0,0,W,H);
+                            tCtx.globalCompositeOperation = 'destination-out';
+                            tCtx.drawImage(img, dx, dy, drawW, drawH);
+                        } else {
+                            tCtx.drawImage(img, dx, dy, drawW, drawH);
                         }
-                        ctx.filter = 'none';
+                        const blurC = document.createElement('canvas');
+                        blurC.width = W; blurC.height = H;
+                        const bCtxTemp = blurC.getContext('2d', { willReadFrequently: true });
+                        bCtxTemp.filter = `blur(${blurRadius}px)`;
+                        bCtxTemp.drawImage(tempC, 0, 0);
+                        return bCtxTemp.getImageData(0,0,W,H).data;
+                    };
+
+                    if (obj.borderBlurEnabled) {
+                        let outBlur = null, inBlur = null;
+                        if (obj.borderPosition === 'outside' || obj.borderPosition === 'centered') outBlur = getAlphaMask(false, obj.borderBlurAmount);
+                        if (obj.borderPosition === 'inside' || obj.borderPosition === 'centered') inBlur = getAlphaMask(true, obj.borderBlurAmount);
+                        for (let i = 0; i < W * H; i++) {
+                            const idxData = i * 4 + 3;
+                            const isOrig = singleImgData[idxData] > 127;
+                            let alpha = 0;
+                            if (obj.borderPosition === 'outside' && !isOrig) alpha = Math.min(1.0, (outBlur[idxData] / 255) * 2.0); 
+                            else if (obj.borderPosition === 'inside' && isOrig) alpha = Math.min(1.0, (inBlur[idxData] / 255) * 2.0);
+                            else if (obj.borderPosition === 'centered') alpha = Math.min(1.0, ((isOrig ? inBlur[idxData] : outBlur[idxData]) / 255) * 2.0);
+                            objBorderAlpha[i] = alpha;
+                        }
                     } else {
-                        for (let idx = targetObjects.length - 1; idx >= 0; idx--) {
-                            const obj = targetObjects[idx];
-                            const img = loadedImgs[idx];
-                            if (!img || obj.isVisible === false) continue;
-                            const { drawW, drawH, dx, dy } = getObjTransform(obj, img, innerW, innerH, offsetX, offsetY);
-                            ctx.drawImage(img, dx, dy, drawW, drawH);
+                        const safeBorderIndex = Math.min(obj.borderThicknessIndex, subdivisions);
+                        const borderSize = adaptedMinSize * Math.pow(2, safeBorderIndex);
+                        const effectiveR = obj.borderPosition === 'centered' ? borderSize / 2 : borderSize;
+                        let outBlur = null, inBlur = null;
+                        if (obj.borderPosition === 'outside' || obj.borderPosition === 'centered') outBlur = getAlphaMask(false, Math.max(1, effectiveR / 1.5));
+                        if (obj.borderPosition === 'inside' || obj.borderPosition === 'centered') inBlur = getAlphaMask(true, Math.max(1, effectiveR / 1.5));
+                        for (let i = 0; i < W * H; i++) {
+                            const idxData = i * 4 + 3;
+                            const isOrig = singleImgData[idxData] > 127;
+                            let isBorder = false;
+                            if (obj.borderPosition === 'outside') { if (outBlur[idxData] > 5 && !isOrig) isBorder = true; }
+                            else if (obj.borderPosition === 'inside') { if (isOrig && inBlur[idxData] > 5) isBorder = true; } 
+                            else if (obj.borderPosition === 'centered') { if ((outBlur[idxData] > 5 && !isOrig) || (isOrig && inBlur[idxData] > 5)) isBorder = true; }
+                            if (isBorder) objBorderAlpha[i] = 1.0;
                         }
                     }
-                    const imgDataMask = ctx.getImageData(0, 0, W, H).data;
-
-                    // Draw Environment Background
-                    ctx.clearRect(0, 0, W, H);
-                    if (imgB) {
-                        ctx.drawImage(imgB, offsetX, offsetY, innerW, innerH);
-                    } 
-                    const imgDataB = ctx.getImageData(0, 0, W, H).data;
-
-                    // Compute per-object borders
-                    const borderLayers = [];
-                    for (let idx = 0; idx < targetObjects.length; idx++) {
-                        const obj = targetObjects[idx];
-                        const img = loadedImgs[idx];
-                        if (!obj.borderEnabled || !img) continue;
-
-                        const { drawW, drawH, dx, dy } = getObjTransform(obj, img, innerW, innerH, offsetX, offsetY);
-                        const objBorderAlpha = new Float32Array(W * H);
-                        
-                        ctx.clearRect(0, 0, W, H);
-                        ctx.drawImage(img, dx, dy, drawW, drawH);
-                        const singleImgData = ctx.getImageData(0, 0, W, H).data;
-
-                        const getAlphaMask = (invert, blurRadius) => {
-                            const tempC = document.createElement('canvas');
-                            tempC.width = W; tempC.height = H;
-                            const tCtx = tempC.getContext('2d');
-                            if (invert) {
-                                tCtx.fillStyle = 'black'; tCtx.fillRect(0,0,W,H);
-                                tCtx.globalCompositeOperation = 'destination-out';
-                                tCtx.drawImage(img, dx, dy, drawW, drawH);
-                            } else {
-                                tCtx.drawImage(img, dx, dy, drawW, drawH);
-                            }
-                            const blurC = document.createElement('canvas');
-                            blurC.width = W; blurC.height = H;
-                            const bCtxTemp = blurC.getContext('2d', { willReadFrequently: true });
-                            bCtxTemp.filter = `blur(${blurRadius}px)`;
-                            bCtxTemp.drawImage(tempC, 0, 0);
-                            return bCtxTemp.getImageData(0,0,W,H).data;
-                        };
-
-                        if (obj.borderBlurEnabled) {
-                            let outBlur = null, inBlur = null;
-                            if (obj.borderPosition === 'outside' || obj.borderPosition === 'centered') outBlur = getAlphaMask(false, obj.borderBlurAmount);
-                            if (obj.borderPosition === 'inside' || obj.borderPosition === 'centered') inBlur = getAlphaMask(true, obj.borderBlurAmount);
-                            for (let i = 0; i < W * H; i++) {
-                                const idxData = i * 4 + 3;
-                                const isOrig = singleImgData[idxData] > 127;
-                                let alpha = 0;
-                                if (obj.borderPosition === 'outside' && !isOrig) alpha = Math.min(1.0, (outBlur[idxData] / 255) * 2.0); 
-                                else if (obj.borderPosition === 'inside' && isOrig) alpha = Math.min(1.0, (inBlur[idxData] / 255) * 2.0);
-                                else if (obj.borderPosition === 'centered') alpha = Math.min(1.0, ((isOrig ? inBlur[idxData] : outBlur[idxData]) / 255) * 2.0);
-                                objBorderAlpha[i] = alpha;
-                            }
-                        } else {
-                            const safeBorderIndex = Math.min(obj.borderThicknessIndex, subdivisions);
-                            const borderSize = adaptedMinSize * Math.pow(2, safeBorderIndex);
-                            const effectiveR = obj.borderPosition === 'centered' ? borderSize / 2 : borderSize;
-                            let outBlur = null, inBlur = null;
-                            if (obj.borderPosition === 'outside' || obj.borderPosition === 'centered') outBlur = getAlphaMask(false, Math.max(1, effectiveR / 1.5));
-                            if (obj.borderPosition === 'inside' || obj.borderPosition === 'centered') inBlur = getAlphaMask(true, Math.max(1, effectiveR / 1.5));
-                            for (let i = 0; i < W * H; i++) {
-                                const idxData = i * 4 + 3;
-                                const isOrig = singleImgData[idxData] > 127;
-                                let isBorder = false;
-                                if (obj.borderPosition === 'outside') { if (outBlur[idxData] > 5 && !isOrig) isBorder = true; }
-                                else if (obj.borderPosition === 'inside') { if (isOrig && inBlur[idxData] > 5) isBorder = true; } 
-                                else if (obj.borderPosition === 'centered') { if ((outBlur[idxData] > 5 && !isOrig) || (isOrig && inBlur[idxData] > 5)) isBorder = true; }
-                                if (isBorder) objBorderAlpha[i] = 1.0;
-                            }
-                        }
-                        
-                        borderLayers.push({
-                            alphaData: objBorderAlpha,
-                            color: obj.borderColour,
-                            isBlurred: obj.borderBlurEnabled
-                        });
-                    }
-
-                    // Pre-calculate quadtree SAT
-                    const sat = new Float64Array((W + 1) * (H + 1));
-                    const coreDensity = 1.0 - (safeCoreIndex / (subdivisions + 1));
-                    for (let y = 0; y < H; y++) {
-                        let rowSum = 0;
-                        for (let x = 0; x < W; x++) {
-                            const i = (y * W + x) * 4;
-                            const alpha_sharp = imgDataA[i + 3] / 255; 
-                            let alpha_blur = imgDataMask[i + 3] / 255;
-                            if (alpha_blur > 0 && alpha_blur < 1) alpha_blur = Math.pow(alpha_blur, transitionCurve);
-                            let bg_luma = 0;
-                            if (imgB) {
-                                const bg_r = imgDataB[i], bg_g = imgDataB[i+1], bg_b = imgDataB[i+2], bg_a = imgDataB[i+3] / 255;
-                                let raw_luma = bg_a > 0 ? (bg_r * 0.299 + bg_g * 0.587 + bg_b * 0.114) / 255 : 0;
-                                const S = envShadows / 100;
-                                const H = envHighlights / 100;
-                                if (H <= S) raw_luma = raw_luma >= S ? 1 : 0;
-                                else {
-                                    raw_luma = Math.max(0, Math.min(1, (raw_luma - S) / (H - S)));
-                                    if (envMidtones !== 1.0) raw_luma = Math.pow(raw_luma, 1.0 / envMidtones);
-                                }
-                                const OB = envOutputBlack / 100;
-                                const OW = envOutputWhite / 100;
-                                raw_luma = raw_luma * (OW - OB) + OB;
-                                bg_luma = raw_luma;
-                            }
-                            const density_under = bg_luma * (1 - alpha_blur) + coreDensity * alpha_blur;
-                            const finalDensity = density_under * (1 - alpha_sharp) + coreDensity * alpha_sharp;
-                            rowSum += finalDensity;
-                            sat[(y + 1) * (W + 1) + (x + 1)] = sat[y * (W + 1) + (x + 1)] + rowSum;
-                        }
-                    }
-
-                    const getAverageDensity = (x, y, w, h) => {
-                        const x1 = Math.max(0, Math.min(W, Math.floor(x))), y1 = Math.max(0, Math.min(H, Math.floor(y)));
-                        const x2 = Math.max(0, Math.min(W, Math.floor(x + w))), y2 = Math.max(0, Math.min(H, Math.floor(y + h)));
-                        const area = (x2 - x1) * (y2 - y1);
-                        if (area === 0) return 0;
-                        const sum = sat[y2 * (W + 1) + x2] - sat[y1 * (W + 1) + x2] - sat[y2 * (W + 1) + x1] + sat[y1 * (W + 1) + x1];
-                        return sum / area;
-                    };
-
-                    const rects = [];
-                    const max_cells = Math.pow(2, subdivisions);
-                    const subdivide = (x, y, w, h, gridX, gridY, depth) => {
-                        if (depth === 0) {
-                            rects.push({ x, y, w, h, gridX, gridY, depth, isBlack: (gridX + gridY) % 2 === 0 });
-                            return;
-                        }
-                        let avgDensity = getAverageDensity(x, y, w, h);
-                        avgDensity = Math.max(0, Math.min(1, avgDensity)); 
-                        const targetDepth = Math.floor((1 - avgDensity) * (subdivisions + 1));
-                        const safeTargetDepth = Math.max(0, Math.min(subdivisions, targetDepth));
-                        if (depth > safeTargetDepth) {
-                            const step = Math.pow(2, depth - 1), hw = w / 2, hh = h / 2;
-                            subdivide(x, y, hw, hh, gridX, gridY, depth - 1);
-                            subdivide(x + hw, y, hw, hh, gridX + step, gridY, depth - 1);
-                            subdivide(x, y + hh, hw, hh, gridX, gridY + step, depth - 1);
-                            subdivide(x + hw, y + hh, hw, hh, gridX + step, gridY + step, depth - 1);
-                        } else {
-                            const parityX = Math.floor(gridX / Math.pow(2, depth)), parityY = Math.floor(gridY / Math.pow(2, depth));
-                            rects.push({ x, y, w, h, gridX, gridY, depth, isBlack: (parityX + parityY) % 2 === 0 });
-                        }
-                    };
-
-                    for (let c = 0; c < Cols; c++) {
-                        for (let r = 0; r < Rows; r++) {
-                            subdivide(offsetX + c * S_max_x, offsetY + r * S_max_y, S_max_x, S_max_y, c * max_cells, r * max_cells, subdivisions);
-                        }
-                    }
-
-                    const bayer8x8 = [
-                        [ 0, 32,  8, 40,  2, 34, 10, 42],
-                        [48, 16, 56, 24, 50, 18, 58, 26],
-                        [12, 44,  4, 36, 14, 46,  6, 38],
-                        [60, 28, 52, 20, 62, 30, 54, 22],
-                        [ 3, 35, 11, 43,  1, 33,  9, 41],
-                        [51, 19, 59, 27, 49, 17, 57, 25],
-                        [15, 47,  7, 39, 13, 45,  5, 37],
-                        [63, 31, 55, 23, 61, 29, 53, 21]
-                    ].map(row => row.map(v => (v + 0.5) / 64));
-
-                    let svgCode = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" preserveAspectRatio="xMidYMid meet">\n`;
-                    let defsCode = `<defs>\n`;
-                    let hasDefs = false;
-                    for (const g of [...graphicsBlack, ...graphicsWhite]) {
-                        if (!g.isDefault && g.innerContent) {
-                            defsCode += `<g id="${g.id}">${g.innerContent}</g>\n`;
-                            hasDefs = true;
-                        }
-                    }
-                    defsCode += `</defs>\n`;
-                    if (hasDefs) svgCode += defsCode;
-                    svgCode += `<rect width="${W}" height="${H}" fill="#ffffff"/>\n`; 
                     
-                    let elementsRendered = 0;
-                    for (const rect of rects) {
-                        let isBlack = rect.isBlack;
-                        if (invertChecker) isBlack = !isBlack;
+                    borderLayers.push({
+                        alphaData: objBorderAlpha,
+                        color: obj.borderColour,
+                        isBlurred: obj.borderBlurEnabled
+                    });
+                }
 
-                        const cx = Math.floor(rect.x + rect.w / 2), cy = Math.floor(rect.y + rect.h / 2);
-                        const safeX = Math.max(0, Math.min(W - 1, cx)), safeY = Math.max(0, Math.min(H - 1, cy));
-                        
-                        // Resolve Process Modes using center pixel mapping
-                        const centerIdx = (safeY * W + safeX) * 4;
-                        const topLayerId = idMap[centerIdx] - 1;
-
-                        if (topLayerId >= 0 && topLayerId < targetObjects.length) {
-                            const obj = targetObjects[topLayerId];
-                            if (obj.processMode === 'dither') {
-                                const r = imgDataVisual[centerIdx], g = imgDataVisual[centerIdx+1], b = imgDataVisual[centerIdx+2];
-                                const luma = (r * 0.299 + g * 0.587 + b * 0.114) / 255;
-                                const bX = rect.gridX % 8, bY = rect.gridY % 8;
-                                const threshold = bayer8x8[bY][bX];
-                                isBlack = luma < threshold;
+                // Pre-calculate quadtree SAT
+                const sat = new Float64Array((W + 1) * (H + 1));
+                const coreDensity = 1.0 - (safeCoreIndex / (subdivisions + 1));
+                for (let y = 0; y < H; y++) {
+                    let rowSum = 0;
+                    for (let x = 0; x < W; x++) {
+                        const i = (y * W + x) * 4;
+                        const alpha_sharp = imgDataA[i + 3] / 255; 
+                        let alpha_blur = imgDataMask[i + 3] / 255;
+                        if (alpha_blur > 0 && alpha_blur < 1) alpha_blur = Math.pow(alpha_blur, transitionCurve);
+                        let bg_luma = 0;
+                        if (imgB) {
+                            const bg_r = imgDataB[i], bg_g = imgDataB[i+1], bg_b = imgDataB[i+2], bg_a = imgDataB[i+3] / 255;
+                            let raw_luma = bg_a > 0 ? (bg_r * 0.299 + bg_g * 0.587 + bg_b * 0.114) / 255 : 0;
+                            const S = envShadows / 100;
+                            const H = envHighlights / 100;
+                            if (H <= S) raw_luma = raw_luma >= S ? 1 : 0;
+                            else {
+                                raw_luma = Math.max(0, Math.min(1, (raw_luma - S) / (H - S)));
+                                if (envMidtones !== 1.0) raw_luma = Math.pow(raw_luma, 1.0 / envMidtones);
                             }
+                            const OB = envOutputBlack / 100;
+                            const OW = envOutputWhite / 100;
+                            raw_luma = raw_luma * (OW - OB) + OB;
+                            bg_luma = raw_luma;
                         }
-                        
-                        // Resolve multiple borders top-down
-                        if (borderLayers.length > 0) {
-                            for (let i = 0; i < borderLayers.length; i++) {
-                                const layer = borderLayers[i];
-                                const bAlpha = layer.alphaData[safeY * W + safeX];
-                                if (bAlpha > 0) {
-                                    let borderHit = false;
-                                    if (layer.isBlurred) {
-                                        const bX = rect.gridX % 8, bY = rect.gridY % 8, threshold = bayer8x8[bY][bX];
-                                        if (bAlpha > threshold) borderHit = true;
-                                    } else { 
-                                        if (bAlpha > 0.5) borderHit = true; 
-                                    }
-                                    
-                                    if (borderHit) {
-                                        isBlack = layer.color === 'black';
-                                        break; 
-                                    }
+                        const density_under = bg_luma * (1 - alpha_blur) + coreDensity * alpha_blur;
+                        const finalDensity = density_under * (1 - alpha_sharp) + coreDensity * alpha_sharp;
+                        rowSum += finalDensity;
+                        sat[(y + 1) * (W + 1) + (x + 1)] = sat[y * (W + 1) + (x + 1)] + rowSum;
+                    }
+                }
+
+                const getAverageDensity = (x, y, w, h) => {
+                    const x1 = Math.max(0, Math.min(W, Math.floor(x))), y1 = Math.max(0, Math.min(H, Math.floor(y)));
+                    const x2 = Math.max(0, Math.min(W, Math.floor(x + w))), y2 = Math.max(0, Math.min(H, Math.floor(y + h)));
+                    const area = (x2 - x1) * (y2 - y1);
+                    if (area === 0) return 0;
+                    const sum = sat[y2 * (W + 1) + x2] - sat[y1 * (W + 1) + x2] - sat[y2 * (W + 1) + x1] + sat[y1 * (W + 1) + x1];
+                    return sum / area;
+                };
+
+                const rects = [];
+                const max_cells = Math.pow(2, subdivisions);
+                const draftDepthCutoff = subdivisions >= 4 ? 2 : (subdivisions >= 2 ? 1 : 0);
+
+                const subdivide = (x, y, w, h, gridX, gridY, depth) => {
+                    if (depth === 0) {
+                        rects.push({ x, y, w, h, gridX, gridY, depth, isBlack: (gridX + gridY) % 2 === 0 });
+                        return;
+                    }
+                    let avgDensity = getAverageDensity(x, y, w, h);
+                    avgDensity = Math.max(0, Math.min(1, avgDensity)); 
+                    const targetDepth = Math.floor((1 - avgDensity) * (subdivisions + 1));
+                    let safeTargetDepth = Math.max(0, Math.min(subdivisions, targetDepth));
+                    
+                    if (isDraft) {
+                        safeTargetDepth = Math.max(draftDepthCutoff, safeTargetDepth);
+                    }
+
+                    if (depth > safeTargetDepth) {
+                        const step = Math.pow(2, depth - 1), hw = w / 2, hh = h / 2;
+                        subdivide(x, y, hw, hh, gridX, gridY, depth - 1);
+                        subdivide(x + hw, y, hw, hh, gridX + step, gridY, depth - 1);
+                        subdivide(x, y + hh, hw, hh, gridX, gridY + step, depth - 1);
+                        subdivide(x + hw, y + hh, hw, hh, gridX + step, gridY + step, depth - 1);
+                    } else {
+                        const parityX = Math.floor(gridX / Math.pow(2, depth)), parityY = Math.floor(gridY / Math.pow(2, depth));
+                        rects.push({ x, y, w, h, gridX, gridY, depth, isBlack: (parityX + parityY) % 2 === 0 });
+                    }
+                };
+
+                for (let c = 0; c < Cols; c++) {
+                    for (let r = 0; r < Rows; r++) {
+                        subdivide(offsetX + c * S_max_x, offsetY + r * S_max_y, S_max_x, S_max_y, c * max_cells, r * max_cells, subdivisions);
+                    }
+                }
+
+                const bayer8x8 = [
+                    [ 0, 32,  8, 40,  2, 34, 10, 42],
+                    [48, 16, 56, 24, 50, 18, 58, 26],
+                    [12, 44,  4, 36, 14, 46,  6, 38],
+                    [60, 28, 52, 20, 62, 30, 54, 22],
+                    [ 3, 35, 11, 43,  1, 33,  9, 41],
+                    [51, 19, 59, 27, 49, 17, 57, 25],
+                    [15, 47,  7, 39, 13, 45,  5, 37],
+                    [63, 31, 55, 23, 61, 29, 53, 21]
+                ].map(row => row.map(v => (v + 0.5) / 64));
+
+                let svgCode = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" preserveAspectRatio="xMidYMid meet">\n`;
+                let defsCode = `<defs>\n`;
+                let hasDefs = false;
+                for (const g of [...graphicsBlack, ...graphicsWhite]) {
+                    if (!g.isDefault && g.innerContent) {
+                        defsCode += `<g id="${g.id}">${g.innerContent}</g>\n`;
+                        hasDefs = true;
+                    }
+                }
+                defsCode += `</defs>\n`;
+                if (hasDefs) svgCode += defsCode;
+                svgCode += `<rect width="${W}" height="${H}" fill="#ffffff"/>\n`; 
+                
+                let elementsRendered = 0;
+                for (const rect of rects) {
+                    let isBlack = rect.isBlack;
+                    if (invertChecker) isBlack = !isBlack;
+
+                    const cx = Math.floor(rect.x + rect.w / 2), cy = Math.floor(rect.y + rect.h / 2);
+                    const safeX = Math.max(0, Math.min(W - 1, cx)), safeY = Math.max(0, Math.min(H - 1, cy));
+                    
+                    // Resolve Process Modes using center pixel mapping
+                    const centerIdx = (safeY * W + safeX) * 4;
+                    const topLayerId = idMap[centerIdx] - 1;
+
+                    if (topLayerId >= 0 && topLayerId < targetObjects.length) {
+                        const obj = targetObjects[topLayerId];
+                        if (obj.processMode === 'dither') {
+                            const r = imgDataVisual[centerIdx], g = imgDataVisual[centerIdx+1], b = imgDataVisual[centerIdx+2];
+                            const luma = (r * 0.299 + g * 0.587 + b * 0.114) / 255;
+                            const bX = rect.gridX % 8, bY = rect.gridY % 8;
+                            const threshold = bayer8x8[bY][bX];
+                            isBlack = luma < threshold;
+                        }
+                    }
+                    
+                    // Resolve multiple borders top-down
+                    if (borderLayers.length > 0) {
+                        for (let i = 0; i < borderLayers.length; i++) {
+                            const layer = borderLayers[i];
+                            const bAlpha = layer.alphaData[safeY * W + safeX];
+                            if (bAlpha > 0) {
+                                let borderHit = false;
+                                if (layer.isBlurred) {
+                                    const bX = rect.gridX % 8, bY = rect.gridY % 8, threshold = bayer8x8[bY][bX];
+                                    if (bAlpha > threshold) borderHit = true;
+                                } else { 
+                                    if (bAlpha > 0.5) borderHit = true; 
+                                }
+                                
+                                if (borderHit) {
+                                    isBlack = layer.color === 'black';
+                                    break; 
                                 }
                             }
                         }
-
-                        const activeLibrary = isBlack ? graphicsBlack : graphicsWhite;
-                        let validPool = activeLibrary.filter(g => {
-                            if (g.isVisible === false) return false;
-                            const currentLevels = g.targetLevels || (g.targetLevel === 'all' || g.targetLevel === undefined ? [...Array(20).keys()] : [parseInt(g.targetLevel)]);
-                            return currentLevels.includes(rect.depth) && g.ratio > 0;
-                        });
-                        if (validPool.length === 0) validPool = activeLibrary.filter(g => g.isDefault && g.isVisible !== false);
-                        if (validPool.length === 0) validPool = [{ isDefault: true }];
-                        let selected = validPool[0];
-                        if (validPool.length > 1) {
-                            const totalRatio = validPool.reduce((sum, g) => sum + g.ratio, 0), hash = getHash(rect.gridX, rect.gridY);
-                            let target = hash * totalRatio;
-                            for (const g of validPool) { target -= g.ratio; if (target <= 0) { selected = g; break; } }
-                        }
-
-                        const baseW = rect.w + 0.8, baseH = rect.h + 0.8;
-                        const defaultBase = isBlack ? '#000000' : '#ffffff';
-                        const baseFill = selected.baseFill === undefined ? defaultBase : selected.baseFill;
-
-                        if (baseFill !== 'transparent' && baseFill !== 'none') {
-                            svgCode += `<rect x="${rect.x}" y="${rect.y}" width="${baseW}" height="${baseH}" fill="${baseFill}"/>\n`;
-                        }
-                        if (!selected.isDefault) {
-                            const overlayScale = selected.elementScale !== undefined ? selected.elementScale / 100 : 1;
-                            const gw = baseW * overlayScale, gh = baseH * overlayScale;
-                            const gx = rect.x + (baseW - gw) / 2, gy = rect.y + (baseH - gh) / 2;
-                            
-                            let origW = selected.origW;
-                            let origH = selected.origH;
-                            let minX = selected.minX || 0;
-                            let minY = selected.minY || 0;
-
-                            if (!origW || !origH) {
-                                const vbParts = selected.viewBox ? selected.viewBox.split(/[\s,]+/).map(parseFloat) : [0,0,100,100];
-                                minX = vbParts[0] || 0;
-                                minY = vbParts[1] || 0;
-                                origW = Math.max(1, vbParts[2] || 100);
-                                origH = Math.max(1, vbParts[3] || 100);
-                            }
-
-                            const scaleX = gw / origW;
-                            const scaleY = gh / origH;
-                            const scale = Math.min(scaleX, scaleY);
-                            
-                            const actualW = origW * scale;
-                            const actualH = origH * scale;
-
-                            const tx = gx + (gw - actualW) / 2 - (minX * scale);
-                            const ty = gy + (gh - actualH) / 2 - (minY * scale);
-
-                            const gFill = selected.fillColor || '#ffffff', gStrokeWidth = selected.borderSize || 0, gStrokeColor = selected.borderColor || '#000000';
-                            let styleStr = `fill="${gFill}"`;
-                            if (gStrokeWidth > 0) {
-                                let paintOrder = 'fill stroke', actualStrokeWidth = gStrokeWidth;
-                                if (selected.borderPosition === 'outside') { paintOrder = 'stroke fill'; actualStrokeWidth = gStrokeWidth * 2; }
-                                styleStr += ` stroke="${gStrokeColor}" stroke-width="${actualStrokeWidth}" paint-order="${paintOrder}" stroke-linejoin="round"`;
-                            }
-                            
-                            if (selected.innerContent) {
-                                svgCode += `<use href="#${selected.id}" xlink:href="#${selected.id}" transform="translate(${tx}, ${ty}) scale(${scale})" ${styleStr} />\n`;
-                            } else {
-                                svgCode += `<rect x="${gx}" y="${gy}" width="${gw}" height="${gh}" ${styleStr} />\n`;
-                            }
-                        }
-                        elementsRendered++;
                     }
 
-                    // Mode 3: Add original images on top of the generated vector mesh
-                    for (let idx = targetObjects.length - 1; idx >= 0; idx--) {
-                        const obj = targetObjects[idx];
-                        const img = loadedImgs[idx];
-                        if (obj.isVisible !== false && obj.processMode === 'original' && img) {
-                            const { drawW, drawH, dx, dy } = getObjTransform(obj, img, innerW, innerH, offsetX, offsetY);
-                            svgCode += `<image x="${dx}" y="${dy}" width="${drawW}" height="${drawH}" href="${img.src}" preserveAspectRatio="none" />\n`;
-                        }
+                    const activeLibrary = isBlack ? graphicsBlack : graphicsWhite;
+                    let validPool = activeLibrary.filter(g => {
+                        if (g.isVisible === false) return false;
+                        const currentLevels = g.targetLevels || (g.targetLevel === 'all' || g.targetLevel === undefined ? [...Array(20).keys()] : [parseInt(g.targetLevel)]);
+                        return currentLevels.includes(rect.depth) && g.ratio > 0;
+                    });
+                    if (validPool.length === 0) validPool = activeLibrary.filter(g => g.isDefault && g.isVisible !== false);
+                    if (validPool.length === 0) validPool = [{ isDefault: true }];
+                    let selected = validPool[0];
+                    if (validPool.length > 1) {
+                        const totalRatio = validPool.reduce((sum, g) => sum + g.ratio, 0), hash = getHash(rect.gridX, rect.gridY);
+                        let target = hash * totalRatio;
+                        for (const g of validPool) { target -= g.ratio; if (target <= 0) { selected = g; break; } }
                     }
 
-                    svgCode += `</svg>`;
-                    const blob = new Blob([svgCode], {type: 'image/svg+xml'});
-                    const url = URL.createObjectURL(blob);
-                    setPreviewUrl(oldUrl => { if(oldUrl) URL.revokeObjectURL(oldUrl); return url; });
-                    setBaseSvgCode(svgCode);
-                    setStats({ elements: elementsRendered, width: W, height: H });
-                } catch(e) { console.error("Failed to generate mesh:", e); } finally { setIsGenerating(false); }
+                    const baseW = rect.w + 0.8, baseH = rect.h + 0.8;
+                    const defaultBase = isBlack ? '#000000' : '#ffffff';
+                    const baseFill = selected.baseFill === undefined ? defaultBase : selected.baseFill;
+
+                    if (baseFill !== 'transparent' && baseFill !== 'none') {
+                        svgCode += `<rect x="${rect.x}" y="${rect.y}" width="${baseW}" height="${baseH}" fill="${baseFill}"/>\n`;
+                    }
+                    if (!selected.isDefault) {
+                        const overlayScale = selected.elementScale !== undefined ? selected.elementScale / 100 : 1;
+                        const gw = baseW * overlayScale, gh = baseH * overlayScale;
+                        const gx = rect.x + (baseW - gw) / 2, gy = rect.y + (baseH - gh) / 2;
+                        
+                        let origW = selected.origW;
+                        let origH = selected.origH;
+                        let minX = selected.minX || 0;
+                        let minY = selected.minY || 0;
+
+                        if (!origW || !origH) {
+                            const vbParts = selected.viewBox ? selected.viewBox.split(/[\s,]+/).map(parseFloat) : [0,0,100,100];
+                            minX = vbParts[0] || 0;
+                            minY = vbParts[1] || 0;
+                            origW = Math.max(1, vbParts[2] || 100);
+                            origH = Math.max(1, vbParts[3] || 100);
+                        }
+
+                        const scaleX = gw / origW;
+                        const scaleY = gh / origH;
+                        const scale = Math.min(scaleX, scaleY);
+                        
+                        const actualW = origW * scale;
+                        const actualH = origH * scale;
+
+                        const tx = gx + (gw - actualW) / 2 - (minX * scale);
+                        const ty = gy + (gh - actualH) / 2 - (minY * scale);
+
+                        const gFill = selected.fillColor || '#ffffff', gStrokeWidth = selected.borderSize || 0, gStrokeColor = selected.borderColor || '#000000';
+                        let styleStr = `fill="${gFill}"`;
+                        if (gStrokeWidth > 0) {
+                            let paintOrder = 'fill stroke', actualStrokeWidth = gStrokeWidth;
+                            if (selected.borderPosition === 'outside') { paintOrder = 'stroke fill'; actualStrokeWidth = gStrokeWidth * 2; }
+                            styleStr += ` stroke="${gStrokeColor}" stroke-width="${actualStrokeWidth}" paint-order="${paintOrder}" stroke-linejoin="round"`;
+                        }
+                        
+                        if (selected.innerContent) {
+                            svgCode += `<use href="#${selected.id}" xlink:href="#${selected.id}" transform="translate(${tx}, ${ty}) scale(${scale})" ${styleStr} />\n`;
+                        } else {
+                            svgCode += `<rect x="${gx}" y="${gy}" width="${gw}" height="${gh}" ${styleStr} />\n`;
+                        }
+                    }
+                    elementsRendered++;
+                }
+
+                // Mode 3: Add original images on top of the generated vector mesh
+                for (let idx = targetObjects.length - 1; idx >= 0; idx--) {
+                    const obj = targetObjects[idx];
+                    const img = loadedImgs[idx];
+                    if (obj.isVisible !== false && obj.processMode === 'original' && img) {
+                        const { drawW, drawH, dx, dy } = getObjTransform(obj, img, innerW, innerH, offsetX, offsetY);
+                        svgCode += `<image x="${dx}" y="${dy}" width="${drawW}" height="${drawH}" href="${img.src}" preserveAspectRatio="none" />\n`;
+                    }
+                }
+
+                svgCode += `</svg>`;
+                return { svgCode, elementsRendered, W, H };
+            };
+
+            const updatePreview = async () => {
+                const hasValidLayer = targetObjects.some(t => t.isVisible !== false && ((t.inputType === 'image' && t.imageInput) || (t.inputType !== 'image' && t.svgInput?.trim())));
+                if (!hasValidLayer && !bgInput) {
+                    setPreviewUrl(null);
+                    setBaseSvgCode("");
+                    setStats({ elements: 0, width: 0, height: 0 });
+                    return;
+                }
+
+                setIsGenerating(true);
+                try {
+                    const result = await createMesh(fastPreview);
+                    if (result) {
+                        const blob = new Blob([result.svgCode], {type: 'image/svg+xml'});
+                        const url = URL.createObjectURL(blob);
+                        setPreviewUrl(oldUrl => { if(oldUrl) URL.revokeObjectURL(oldUrl); return url; });
+                        setBaseSvgCode(result.svgCode);
+                        setStats({ elements: result.elementsRendered, width: result.W, height: result.H });
+                    }
+                } catch(e) {
+                    console.error("Failed to generate preview:", e);
+                } finally {
+                    setIsGenerating(false);
+                }
             };
 
             const handleTargetSvgUpload = (e, id) => {
@@ -917,63 +1038,85 @@
                 setTargetObjects(prev => prev.filter(obj => obj.id !== id));
             };
 
-            const downloadFinalSvg = () => {
-                if (!baseSvgCode) return;
-                const blob = new Blob([baseSvgCode], {type: 'image/svg+xml;charset=utf-8'});
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = `vector-mesh-${Date.now()}.svg`;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                URL.revokeObjectURL(url);
+            const downloadFinalSvg = async () => {
+                if (isGenerating) return;
+                setIsGenerating(true);
+                try {
+                    const result = await createMesh(false); // Render in full quality
+                    if (!result) return;
+                    const blob = new Blob([result.svgCode], {type: 'image/svg+xml;charset=utf-8'});
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `vector-mesh-${Date.now()}.svg`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                } catch(e) {
+                    console.error(e);
+                } finally {
+                    setIsGenerating(false);
+                }
             };
 
-            const downloadFinalPng = () => {
-                if (!baseSvgCode) return;
-                
-                let exportW, exportH;
-                const activeFormat = format === 'custom' ? (customW / Math.max(1, customH)) : format;
-
-                if (activeFormat >= 1) { 
-                    // Landscape or Square: H is shorter side
-                    exportH = pngResolution;
-                    exportW = Math.round(pngResolution * activeFormat);
-                } else { 
-                    // Portrait: W is shorter side
-                    exportW = pngResolution;
-                    exportH = Math.round(pngResolution / activeFormat);
-                }
-
-                const canvas = document.createElement('canvas');
-                canvas.width = exportW;
-                canvas.height = exportH;
-                const ctx = canvas.getContext('2d');
-                
-                const img = new Image();
-                // Replace the physical width/height for sharp internal SVG scaling before creating the Blob
-                const exportSvgCode = baseSvgCode.replace(/width="\d+" height="\d+"/, `width="${exportW}" height="${exportH}"`);
-                const svgBlob = new Blob([exportSvgCode], {type: 'image/svg+xml;charset=utf-8'});
-                const url = URL.createObjectURL(svgBlob);
-                
-                img.onload = () => {
-                    ctx.fillStyle = '#ffffff';
-                    ctx.fillRect(0, 0, exportW, exportH);
-                    ctx.drawImage(img, 0, 0, exportW, exportH);
+            const downloadFinalPng = async () => {
+                if (isGenerating) return;
+                setIsGenerating(true);
+                try {
+                    const result = await createMesh(false); // Render in full quality
+                    if (!result) return;
                     
-                    canvas.toBlob((blob) => {
-                        const a = document.createElement('a');
-                        a.href = URL.createObjectURL(blob);
-                        a.download = `vector-mesh-${Date.now()}.png`;
-                        document.body.appendChild(a);
-                        a.click();
-                        document.body.removeChild(a);
-                        URL.revokeObjectURL(a.href);
-                    }, 'image/png');
-                    URL.revokeObjectURL(url);
-                };
-                img.src = url;
+                    let exportW, exportH;
+                    const activeFormat = format === 'custom' ? (customW / Math.max(1, customH)) : format;
+
+                    if (activeFormat >= 1) { 
+                        // Landscape or Square: H is shorter side
+                        exportH = pngResolution;
+                        exportW = Math.round(pngResolution * activeFormat);
+                    } else { 
+                        // Portrait: W is shorter side
+                        exportW = pngResolution;
+                        exportH = Math.round(pngResolution / activeFormat);
+                    }
+
+                    const canvas = document.createElement('canvas');
+                    canvas.width = exportW;
+                    canvas.height = exportH;
+                    const ctx = canvas.getContext('2d');
+                    
+                    const img = new Image();
+                    // Replace the physical width/height for sharp internal SVG scaling before creating the Blob
+                    const exportSvgCode = result.svgCode.replace(/width="\d+" height="\d+"/, `width="${exportW}" height="${exportH}"`);
+                    const svgBlob = new Blob([exportSvgCode], {type: 'image/svg+xml;charset=utf-8'});
+                    const url = URL.createObjectURL(svgBlob);
+                    
+                    await new Promise((resolve, reject) => {
+                        img.onload = () => {
+                            ctx.fillStyle = '#ffffff';
+                            ctx.fillRect(0, 0, exportW, exportH);
+                            ctx.drawImage(img, 0, 0, exportW, exportH);
+                            
+                            canvas.toBlob((blob) => {
+                                const a = document.createElement('a');
+                                a.href = URL.createObjectURL(blob);
+                                a.download = `vector-mesh-${Date.now()}.png`;
+                                document.body.appendChild(a);
+                                a.click();
+                                document.body.removeChild(a);
+                                URL.revokeObjectURL(a.href);
+                                resolve();
+                            }, 'image/png');
+                            URL.revokeObjectURL(url);
+                        };
+                        img.onerror = reject;
+                        img.src = url;
+                    });
+                } catch(e) {
+                    console.error(e);
+                } finally {
+                    setIsGenerating(false);
+                }
             };
 
             const renderLibrary = (type, title, graphics) => {
@@ -1549,9 +1692,25 @@
                         </div>
                     </div>
                     <div className="flex-1 relative flex flex-col bg-[#1E1E1E] overflow-hidden min-h-0 min-w-0">
-                        <div className="absolute top-4 right-4 bg-gray-800/90 backdrop-blur-md px-4 py-2 border border-gray-700 rounded-lg shadow-lg z-40 flex gap-4 text-xs font-medium text-gray-300 pointer-events-none">
-                            <div>Output Res: <span className="text-white font-mono">{stats.width} × {stats.height}</span></div>
-                            <div className="w-px bg-gray-600"></div>
+                        <div className="absolute top-4 right-4 bg-gray-800/90 backdrop-blur-md px-4 py-2 border border-gray-700 rounded-lg shadow-lg z-40 flex items-center gap-4 text-xs font-medium text-gray-300 pointer-events-auto shadow-[0_4px_20px_rgba(0,0,0,0.5)]">
+                            <div className="flex items-center gap-1.5 border-r border-gray-600 pr-4">
+                                <button onClick={undo} disabled={historyIndex <= 0} className="text-gray-400 hover:text-white disabled:opacity-30 disabled:hover:text-gray-400 transition-colors" title="Undo (Revert settings)">
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6"/></svg>
+                                </button>
+                                <button onClick={redo} disabled={historyIndex >= history.length - 1} className="text-gray-400 hover:text-white disabled:opacity-30 disabled:hover:text-gray-400 transition-colors" title="Redo">
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 10h-10a8 8 0 00-8 8v2M21 10l-6 6m6-6l-6-6"/></svg>
+                                </button>
+                            </div>
+                            <label className="flex items-center cursor-pointer gap-2 hover:text-white transition-colors" title="Render at lower detail for instant feedback">
+                                <span>Fast Preview</span>
+                                <div className={`w-8 h-4 rounded-full p-0.5 transition-colors ${fastPreview ? 'bg-blue-500' : 'bg-gray-600'}`}>
+                                    <div className={`bg-white w-3 h-3 rounded-full shadow-sm transform transition-transform ${fastPreview ? 'translate-x-4' : 'translate-x-0'}`}></div>
+                                </div>
+                                <input type="checkbox" className="hidden" checked={fastPreview} onChange={(e) => setFastPreview(e.target.checked)} />
+                            </label>
+                            <div className="w-px h-4 bg-gray-600"></div>
+                            <div>Output: <span className="text-white font-mono">{stats.width} × {stats.height}</span></div>
+                            <div className="w-px h-4 bg-gray-600"></div>
                             <div>Modules: <span className="text-white font-mono">{stats.elements.toLocaleString()}</span></div>
                         </div>
                         <div className="flex-1 w-full h-full flex items-center justify-center relative p-8 md:p-12 min-h-0 min-w-0">
