@@ -52,12 +52,26 @@
             { name: 'Escalator Panel / LEP (~1:2.1)', aspectRatio: 0.476 },
         ];
 
+        const ENV_PRESETS = [
+            { id: 'ltr', name: 'Linear Right', css: 'linear-gradient(to right, black, white)' },
+            { id: 'rtl', name: 'Linear Left', css: 'linear-gradient(to left, black, white)' },
+            { id: 'ttb', name: 'Linear Down', css: 'linear-gradient(to bottom, black, white)' },
+            { id: 'btt', name: 'Linear Up', css: 'linear-gradient(to top, black, white)' },
+            { id: 'radial-out', name: 'Radial Out', css: 'radial-gradient(circle, black, white)' },
+            { id: 'radial-in', name: 'Radial In', css: 'radial-gradient(circle, white, black)' },
+            { id: 'shadow-black', name: 'Inner Shadow Black', css: 'radial-gradient(circle, white 30%, black 100%)' },
+            { id: 'shadow-white', name: 'Inner Shadow White', css: 'radial-gradient(circle, black 30%, white 100%)' },
+        ];
+
         const defaultTargetObject = {
             id: 'obj-' + Date.now(),
             name: 'New Layer',
             isExpanded: true,
             isVisible: true,
+            inputType: 'svg', // 'svg' or 'image'
             svgInput: defaultSVG,
+            imageInput: null,
+            processMode: 'silhouette', // 'silhouette', 'dither', 'original'
             objectScale: 0.85,
             alignH: 'center',
             alignV: 'center',
@@ -115,8 +129,32 @@
             return { ...g, svgInput: currentSvgInput, ...parsed };
         });
 
+        const Panel = ({ id, title, isOpen, onToggle, children }) => (
+            <div className="border-b border-gray-200">
+                <button onClick={() => onToggle(id)} className="w-full px-5 py-4 flex justify-between items-center bg-white hover:bg-gray-50 focus:outline-none transition-colors">
+                    <span className="text-sm font-semibold text-gray-700">{title}</span>
+                    <svg className={`w-4 h-4 text-gray-400 transition-transform ${isOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" /></svg>
+                </button>
+                {isOpen && (
+                    <div className="px-5 pb-5 space-y-4 animate-fade-in bg-white">
+                        {children}
+                    </div>
+                )}
+            </div>
+        );
+
         const App = () => {
-            // Target Objects State (Multiple SVGs)
+            // Panels state
+            const [panels, setPanels] = useState({
+                layers: true,
+                env: false,
+                graphics: false,
+                grid: false,
+                canvas: false,
+                export: false
+            });
+
+            // Target Objects State (Multiple SVGs/Images)
             const [targetObjects, setTargetObjects] = useState([{ ...defaultTargetObject, name: 'Layer 1' }]);
             const [coreModuleIndex, setCoreModuleIndex] = useState(0); 
 
@@ -227,6 +265,7 @@
                                 ...defaultTargetObject,
                                 id: 'legacy-' + Date.now(),
                                 name: 'Imported Layer',
+                                inputType: 'svg',
                                 svgInput: config.svgInput,
                                 objectScale: config.objectScale || 0.85,
                                 borderEnabled: config.borderEnabled || false,
@@ -290,6 +329,38 @@
                 });
             };
 
+            const applyEnvPreset = (presetId) => {
+                const c = document.createElement('canvas');
+                c.width = 512; c.height = 512;
+                const ctx = c.getContext('2d');
+                let g;
+                switch(presetId) {
+                    case 'ltr': g = ctx.createLinearGradient(0,0,512,0); g.addColorStop(0,'black'); g.addColorStop(1,'white'); break;
+                    case 'rtl': g = ctx.createLinearGradient(0,0,512,0); g.addColorStop(0,'white'); g.addColorStop(1,'black'); break;
+                    case 'ttb': g = ctx.createLinearGradient(0,0,0,512); g.addColorStop(0,'black'); g.addColorStop(1,'white'); break;
+                    case 'btt': g = ctx.createLinearGradient(0,0,0,512); g.addColorStop(0,'white'); g.addColorStop(1,'black'); break;
+                    case 'radial-out':
+                        g = ctx.createRadialGradient(256,256,0,256,256,360);
+                        g.addColorStop(0,'black'); g.addColorStop(1,'white');
+                        break;
+                    case 'radial-in':
+                        g = ctx.createRadialGradient(256,256,0,256,256,360);
+                        g.addColorStop(0,'white'); g.addColorStop(1,'black');
+                        break;
+                    case 'shadow-black':
+                        g = ctx.createRadialGradient(256,256,100,256,256,360);
+                        g.addColorStop(0,'white'); g.addColorStop(1,'black');
+                        break;
+                    case 'shadow-white':
+                        g = ctx.createRadialGradient(256,256,100,256,256,360);
+                        g.addColorStop(0,'black'); g.addColorStop(1,'white');
+                        break;
+                }
+                ctx.fillStyle = g;
+                ctx.fillRect(0,0,512,512);
+                setBgInput(c.toDataURL('image/png'));
+            };
+
             const getHash = (x, y) => {
                 let h = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453;
                 return h - Math.floor(h);
@@ -322,10 +393,6 @@
             };
 
             const generateMesh = async () => {
-                // Check if there are valid layers to render
-                const hasValidLayer = targetObjects.some(t => t.isVisible !== false && t.svgInput.trim());
-                if (!hasValidLayer) return;
-
                 setIsGenerating(true);
                 await new Promise(r => setTimeout(r, 10));
 
@@ -354,53 +421,89 @@
 
                     const adaptedMinSize = ((S_max_x + S_max_y) / 2) / Math.pow(2, subdivisions);
 
-                    // Load SVGs 
+                    // Load Data (SVG or Image)
                     const loadedImgs = await Promise.all(targetObjects.map(obj => {
                         if (obj.isVisible === false) return Promise.resolve(null);
-                        let svgStr = obj.svgInput?.trim();
-                        if (!svgStr) return Promise.resolve(null);
-                        return loadImage(svgStr, true);
+                        if (obj.inputType === 'image') {
+                            if (!obj.imageInput) return Promise.resolve(null);
+                            return loadImage(obj.imageInput, false);
+                        } else {
+                            let svgStr = obj.svgInput?.trim();
+                            if (!svgStr) return Promise.resolve(null);
+                            return loadImage(svgStr, true);
+                        }
                     }));
 
                     const imgB = await loadImage(bgInput, false);
+
+                    // Create idMap (Stores the topmost layer ID at every pixel to guide Process Modes)
+                    const idCanvas = document.createElement('canvas');
+                    idCanvas.width = W; idCanvas.height = H;
+                    const idCtx = idCanvas.getContext('2d', { willReadFrequently: true });
+                    
+                    for (let idx = targetObjects.length - 1; idx >= 0; idx--) {
+                        const obj = targetObjects[idx];
+                        const img = loadedImgs[idx];
+                        if (!img || obj.isVisible === false) continue;
+                        const { drawW, drawH, dx, dy } = getObjTransform(obj, img, innerW, innerH, offsetX, offsetY);
+                        
+                        const tempC = document.createElement('canvas');
+                        tempC.width = W; tempC.height = H;
+                        const tCtx = tempC.getContext('2d');
+                        tCtx.drawImage(img, dx, dy, drawW, drawH);
+                        
+                        tCtx.globalCompositeOperation = 'source-in';
+                        tCtx.fillStyle = `rgb(${idx + 1}, 0, 0)`; // Red channel tracks layer ID + 1
+                        tCtx.fillRect(0, 0, W, H);
+                        
+                        idCtx.drawImage(tempC, 0, 0);
+                    }
+                    const idMap = idCtx.getImageData(0, 0, W, H).data;
+
+                    // Create Visual Canvas (for Density and Dither sampling)
+                    const visCanvas = document.createElement('canvas');
+                    visCanvas.width = W; visCanvas.height = H;
+                    const visCtx = visCanvas.getContext('2d', { willReadFrequently: true });
+                    
+                    for (let idx = targetObjects.length - 1; idx >= 0; idx--) {
+                        const obj = targetObjects[idx];
+                        const img = loadedImgs[idx];
+                        if (!img || obj.isVisible === false) continue;
+                        const { drawW, drawH, dx, dy } = getObjTransform(obj, img, innerW, innerH, offsetX, offsetY);
+                        visCtx.drawImage(img, dx, dy, drawW, drawH);
+                    }
+                    const imgDataVisual = visCtx.getImageData(0, 0, W, H).data;
+                    const imgDataA = imgDataVisual; // Re-use alpha for density quadtree
 
                     const canvas = document.createElement('canvas');
                     canvas.width = W;
                     canvas.height = H;
                     const ctx = canvas.getContext('2d', { willReadFrequently: true });
                     
-                    // Draw Combined Objects (imgDataA)
-                    ctx.clearRect(0, 0, W, H);
-                    targetObjects.forEach((obj, idx) => {
-                        const img = loadedImgs[idx];
-                        if (!img) return;
-                        const { drawW, drawH, dx, dy } = getObjTransform(obj, img, innerW, innerH, offsetX, offsetY);
-                        ctx.drawImage(img, dx, dy, drawW, drawH);
-                    });
-                    const imgDataA = ctx.getImageData(0, 0, W, H).data;
-
-                    // Draw Combined Blurred Mask (imgDataMask)
+                    // Draw Blurred Mask (imgDataMask)
                     ctx.clearRect(0, 0, W, H);
                     if (transitionSpread > 0) {
                         ctx.filter = `blur(${transitionSpread}px)`;
-                        targetObjects.forEach((obj, idx) => {
+                        for (let idx = targetObjects.length - 1; idx >= 0; idx--) {
+                            const obj = targetObjects[idx];
                             const img = loadedImgs[idx];
-                            if (!img) return;
+                            if (!img || obj.isVisible === false) continue;
                             const { drawW, drawH, dx, dy } = getObjTransform(obj, img, innerW, innerH, offsetX, offsetY);
                             ctx.drawImage(img, dx, dy, drawW, drawH);
-                        });
+                        }
                         ctx.filter = 'none';
                     } else {
-                        targetObjects.forEach((obj, idx) => {
+                        for (let idx = targetObjects.length - 1; idx >= 0; idx--) {
+                            const obj = targetObjects[idx];
                             const img = loadedImgs[idx];
-                            if (!img) return;
+                            if (!img || obj.isVisible === false) continue;
                             const { drawW, drawH, dx, dy } = getObjTransform(obj, img, innerW, innerH, offsetX, offsetY);
                             ctx.drawImage(img, dx, dy, drawW, drawH);
-                        });
+                        }
                     }
                     const imgDataMask = ctx.getImageData(0, 0, W, H).data;
 
-                    // Draw Background Map
+                    // Draw Environment Background
                     ctx.clearRect(0, 0, W, H);
                     if (imgB) {
                         ctx.drawImage(imgB, offsetX, offsetY, innerW, innerH);
@@ -577,13 +680,28 @@
                     for (const rect of rects) {
                         let isBlack = rect.isBlack;
                         if (invertChecker) isBlack = !isBlack;
+
+                        const cx = Math.floor(rect.x + rect.w / 2), cy = Math.floor(rect.y + rect.h / 2);
+                        const safeX = Math.max(0, Math.min(W - 1, cx)), safeY = Math.max(0, Math.min(H - 1, cy));
+                        
+                        // Resolve Process Modes using center pixel mapping
+                        const centerIdx = (safeY * W + safeX) * 4;
+                        const topLayerId = idMap[centerIdx] - 1;
+
+                        if (topLayerId >= 0 && topLayerId < targetObjects.length) {
+                            const obj = targetObjects[topLayerId];
+                            if (obj.processMode === 'dither') {
+                                const r = imgDataVisual[centerIdx], g = imgDataVisual[centerIdx+1], b = imgDataVisual[centerIdx+2];
+                                const luma = (r * 0.299 + g * 0.587 + b * 0.114) / 255;
+                                const bX = rect.gridX % 8, bY = rect.gridY % 8;
+                                const threshold = bayer8x8[bY][bX];
+                                isBlack = luma < threshold;
+                            }
+                        }
                         
                         // Resolve multiple borders top-down
                         if (borderLayers.length > 0) {
-                            const cx = Math.floor(rect.x + rect.w / 2), cy = Math.floor(rect.y + rect.h / 2);
-                            const safeX = Math.max(0, Math.min(W - 1, cx)), safeY = Math.max(0, Math.min(H - 1, cy));
-                            
-                            for (let i = borderLayers.length - 1; i >= 0; i--) {
+                            for (let i = 0; i < borderLayers.length; i++) {
                                 const layer = borderLayers[i];
                                 const bAlpha = layer.alphaData[safeY * W + safeX];
                                 if (bAlpha > 0) {
@@ -669,6 +787,17 @@
                         }
                         elementsRendered++;
                     }
+
+                    // Mode 3: Add original images on top of the generated vector mesh
+                    for (let idx = targetObjects.length - 1; idx >= 0; idx--) {
+                        const obj = targetObjects[idx];
+                        const img = loadedImgs[idx];
+                        if (obj.isVisible !== false && obj.processMode === 'original' && img) {
+                            const { drawW, drawH, dx, dy } = getObjTransform(obj, img, innerW, innerH, offsetX, offsetY);
+                            svgCode += `<image x="${dx}" y="${dy}" width="${drawW}" height="${drawH}" href="${img.src}" preserveAspectRatio="none" />\n`;
+                        }
+                    }
+
                     svgCode += `</svg>`;
                     const blob = new Blob([svgCode], {type: 'image/svg+xml'});
                     const url = URL.createObjectURL(blob);
@@ -684,6 +813,15 @@
                 const reader = new FileReader();
                 reader.onload = (event) => updateTargetObject(id, 'svgInput', event.target.result);
                 reader.readAsText(file);
+                e.target.value = null;
+            };
+
+            const handleTargetImageUpload = (e, id) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (event) => updateTargetObject(id, 'imageInput', event.target.result);
+                reader.readAsDataURL(file);
                 e.target.value = null;
             };
 
@@ -731,12 +869,12 @@
 
             // ---- TARGET OBJECTS HANDLERS ----
             const addTargetObject = () => {
-                setTargetObjects(prev => [...prev, {
+                setTargetObjects(prev => [{
                     ...defaultTargetObject,
                     id: 'obj-' + Date.now() + '-' + Math.random(),
                     name: `Layer ${prev.length + 1}`,
                     svgInput: '<svg></svg>'
-                }]);
+                }, ...prev]);
             };
 
             const duplicateTargetObject = (id) => {
@@ -748,9 +886,27 @@
                         name: targetObjects[objIndex].name + ' (Copy)' 
                     };
                     const newTargets = [...targetObjects];
-                    newTargets.splice(objIndex + 1, 0, newObj);
+                    newTargets.splice(objIndex, 0, newObj);
                     setTargetObjects(newTargets);
                 }
+            };
+
+            const moveLayerUp = (index) => {
+                if (index === 0) return;
+                setTargetObjects(prev => {
+                    const newArr = [...prev];
+                    [newArr[index - 1], newArr[index]] = [newArr[index], newArr[index - 1]];
+                    return newArr;
+                });
+            };
+
+            const moveLayerDown = (index) => {
+                if (index === targetObjects.length - 1) return;
+                setTargetObjects(prev => {
+                    const newArr = [...prev];
+                    [newArr[index + 1], newArr[index]] = [newArr[index], newArr[index + 1]];
+                    return newArr;
+                });
             };
 
             const updateTargetObject = (id, field, value) => {
@@ -823,7 +979,7 @@
             const renderLibrary = (type, title, graphics) => {
                 const isDark = type === 'black';
                 return (
-                    <div className="space-y-3 mb-6">
+                    <div className="space-y-3 mb-4">
                         <div className="flex items-center justify-between border-b border-gray-200 pb-1">
                             <span className="text-[11px] font-bold text-gray-600 uppercase">{title}</span>
                         </div>
@@ -983,10 +1139,12 @@
                 );
             };
 
+            const togglePanel = (id) => setPanels(p => ({ ...p, [id]: !p[id] }));
+
             return (
                 <div className="flex h-screen w-screen overflow-hidden bg-gray-50 text-gray-800">
-                    <div className="w-96 flex flex-col bg-white border-r border-gray-200 shadow-sm z-10 flex-shrink-0 relative">
-                        <div className="p-5 border-b border-gray-100 bg-white sticky top-0 z-20 flex justify-between items-center">
+                    <div className="w-96 flex flex-col bg-gray-50 border-r border-gray-200 shadow-sm z-10 flex-shrink-0 relative">
+                        <div className="p-5 border-b border-gray-200 bg-white sticky top-0 z-20 flex justify-between items-center shadow-sm">
                             <div>
                                 <h1 className="text-xl font-bold tracking-tight text-gray-900">Vector Mesh<span className="text-blue-600">.</span></h1>
                                 <p className="text-xs text-gray-500 mt-1">Quadtree Pixelation Engine</p>
@@ -1001,11 +1159,10 @@
                                 </button>
                             </div>
                         </div>
-                        <div className="p-5 overflow-y-auto flex-1 space-y-8 pb-32">
+                        <div className="flex-1 overflow-y-auto pb-32 bg-gray-50">
                             
-                            <div className="space-y-4">
-                                <div className="flex justify-between items-center">
-                                    <label className="block text-sm font-semibold text-gray-700">1. Target Layers (SVGs)</label>
+                            <Panel id="layers" title="1. Target Layers" isOpen={panels.layers} onToggle={togglePanel}>
+                                <div className="flex justify-end items-center -mt-2">
                                     <button onClick={addTargetObject} className="text-xs bg-blue-50 border border-blue-200 text-blue-600 hover:bg-blue-100 px-2.5 py-1 rounded-md font-bold shadow-sm transition-colors">+ Add Layer</button>
                                 </div>
                                 <div className="space-y-4">
@@ -1030,14 +1187,27 @@
                                                         )}
                                                     </button>
                                                     
-                                                    {/* SVG Thumbnail */}
-                                                    <div className="w-6 h-6 flex-shrink-0 bg-white border border-gray-200 rounded flex items-center justify-center overflow-hidden [&>svg]:w-full [&>svg]:h-full [&>svg]:object-contain" dangerouslySetInnerHTML={{ __html: obj.svgInput || '' }} />
+                                                    {/* SVG / Image Thumbnail */}
+                                                    <div className="w-6 h-6 flex-shrink-0 bg-white border border-gray-200 rounded flex items-center justify-center overflow-hidden [&>svg]:w-full [&>svg]:h-full [&>svg]:object-contain">
+                                                        {(!obj.inputType || obj.inputType === 'svg') 
+                                                            ? <div className="w-full h-full" dangerouslySetInnerHTML={{ __html: obj.svgInput || '' }} />
+                                                            : (obj.imageInput ? <img src={obj.imageInput} className="w-full h-full object-contain" /> : <div className="w-full h-full bg-gray-100" />)
+                                                        }
+                                                    </div>
 
                                                     {/* Editable Name */}
                                                     <input type="text" value={obj.name || `Layer ${index + 1}`} onChange={(e) => updateTargetObject(obj.id, 'name', e.target.value)} className="text-xs font-bold text-gray-700 bg-transparent border border-transparent hover:border-gray-300 focus:bg-white focus:border-blue-500 rounded px-1.5 py-0.5 outline-none w-full min-w-0 truncate transition-colors" />
                                                 </div>
 
                                                 <div className="flex items-center gap-1.5 ml-2 flex-shrink-0" onClick={e => e.stopPropagation()}>
+                                                    <div className="flex items-center gap-1 border-r border-gray-200 pr-1.5 mr-1.5">
+                                                        <button onClick={(e) => { e.stopPropagation(); moveLayerUp(index); }} disabled={index === 0} className="text-gray-400 hover:text-blue-500 disabled:opacity-30 disabled:hover:text-gray-400 transition-colors" title="Move Up">
+                                                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 15l7-7 7 7" /></svg>
+                                                        </button>
+                                                        <button onClick={(e) => { e.stopPropagation(); moveLayerDown(index); }} disabled={index === targetObjects.length - 1} className="text-gray-400 hover:text-blue-500 disabled:opacity-30 disabled:hover:text-gray-400 transition-colors" title="Move Down">
+                                                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" /></svg>
+                                                        </button>
+                                                    </div>
                                                     <button onClick={() => duplicateTargetObject(obj.id)} className="text-gray-400 hover:text-blue-500 transition-colors" title="Duplicate Layer">
                                                         <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
                                                     </button>
@@ -1052,19 +1222,44 @@
                                             {/* Layer Body */}
                                             {obj.isExpanded !== false && (
                                                 <div className={`p-3 space-y-4 transition-opacity ${obj.isVisible === false ? 'opacity-40 grayscale' : ''}`}>
-                                                    <div className="animate-fade-in mb-2">
-                                                        <label className="flex items-center justify-center w-full px-3 py-1.5 border border-dashed border-gray-300 rounded cursor-pointer hover:border-blue-500 hover:bg-blue-50 transition-colors">
-                                                            <span className="text-xs text-gray-600 font-medium">Upload .SVG file</span>
-                                                            <input type="file" accept=".svg" className="hidden" onChange={(e) => handleTargetSvgUpload(e, obj.id)} />
-                                                        </label>
-                                                        <textarea className="w-full mt-2 text-[10px] font-mono p-2 border border-gray-200 rounded bg-gray-50 focus:ring-1 focus:ring-blue-500 focus:outline-none resize-y" rows="2" value={obj.svgInput} onChange={(e) => updateTargetObject(obj.id, 'svgInput', e.target.value)} placeholder="...or paste raw <svg> code here" />
-                                                    </div>
                                                     
+                                                    <div className="flex gap-2">
+                                                        <button onClick={() => updateTargetObject(obj.id, 'inputType', 'svg')} className={`flex-1 py-1.5 text-[10px] font-bold rounded border transition-colors ${(!obj.inputType || obj.inputType === 'svg') ? 'bg-blue-50 border-blue-300 text-blue-700' : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'}`}>SVG Data</button>
+                                                        <button onClick={() => updateTargetObject(obj.id, 'inputType', 'image')} className={`flex-1 py-1.5 text-[10px] font-bold rounded border transition-colors ${obj.inputType === 'image' ? 'bg-blue-50 border-blue-300 text-blue-700' : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'}`}>Image (PNG/JPG)</button>
+                                                    </div>
+
+                                                    {(!obj.inputType || obj.inputType === 'svg') ? (
+                                                        <div className="animate-fade-in mb-2">
+                                                            <label className="flex items-center justify-center w-full px-3 py-1.5 border border-dashed border-gray-300 rounded cursor-pointer hover:border-blue-500 hover:bg-blue-50 transition-colors">
+                                                                <span className="text-xs text-gray-600 font-medium">Upload .SVG file</span>
+                                                                <input type="file" accept=".svg" className="hidden" onChange={(e) => handleTargetSvgUpload(e, obj.id)} />
+                                                            </label>
+                                                            <textarea className="w-full mt-2 text-[10px] font-mono p-2 border border-gray-200 rounded bg-gray-50 focus:ring-1 focus:ring-blue-500 focus:outline-none resize-y" rows="2" value={obj.svgInput} onChange={(e) => updateTargetObject(obj.id, 'svgInput', e.target.value)} placeholder="...or paste raw <svg> code here" />
+                                                        </div>
+                                                    ) : (
+                                                        <div className="animate-fade-in mb-2">
+                                                            <label className="flex items-center justify-center w-full px-3 py-3 border border-dashed border-gray-300 rounded cursor-pointer hover:border-blue-500 hover:bg-blue-50 transition-colors">
+                                                                <span className="text-xs text-gray-600 font-medium">{obj.imageInput ? 'Replace Image' : 'Upload PNG/JPG file'}</span>
+                                                                <input type="file" accept="image/png, image/jpeg, image/webp" className="hidden" onChange={(e) => handleTargetImageUpload(e, obj.id)} />
+                                                            </label>
+                                                            {obj.imageInput && <div className="mt-2 text-[10px] text-green-600 font-bold flex items-center justify-center gap-1"><svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7"></path></svg> Image Loaded</div>}
+                                                        </div>
+                                                    )}
+                                                    
+                                                    <div className="pt-2 border-t border-gray-100 mb-2">
+                                                        <span className="text-[10px] text-gray-500 font-bold uppercase block mb-1">Process Mode</span>
+                                                        <select className="w-full p-1.5 text-[10px] border border-gray-300 rounded bg-white focus:outline-none focus:ring-1 focus:ring-blue-500 font-medium" value={obj.processMode || 'silhouette'} onChange={(e) => updateTargetObject(obj.id, 'processMode', e.target.value)}>
+                                                            <option value="silhouette">Silhouette (Fill with grid modules)</option>
+                                                            <option value="dither">Dither (Match grid to image lightness)</option>
+                                                            <option value="original">Overlay (Original image on top of grid)</option>
+                                                        </select>
+                                                    </div>
+
                                                     <div className="pt-2 border-t border-gray-100">
                                                         <div className="flex justify-between items-center mb-1">
                                                             <span className="text-[10px] text-gray-500 font-bold uppercase block mb-1">Layer Scale</span>
                                                             <div className="flex items-center">
-                                                                <input type="number" min="0.1" max="1.5" step="0.01" value={obj.objectScale} onChange={(e) => updateTargetObject(obj.id, 'objectScale', parseFloat(e.target.value) || 0)} className="w-14 text-right text-[10px] font-mono border border-gray-200 rounded px-1 py-0.5 outline-none focus:border-blue-500" />
+                                                                <input type="number" min="0.1" max="5.0" step="0.01" value={obj.objectScale} onChange={(e) => updateTargetObject(obj.id, 'objectScale', parseFloat(e.target.value) || 0)} className="w-14 text-right text-[10px] font-mono border border-gray-200 rounded px-1 py-0.5 outline-none focus:border-blue-500" />
                                                                 <span className="text-[10px] text-gray-400 ml-1">x</span>
                                                             </div>
                                                         </div>
@@ -1172,11 +1367,9 @@
                                         </div>
                                     ))}
                                 </div>
-                            </div>
-                            
-                            <hr className="border-gray-100" />
-                            <div className="space-y-4">
-                                <label className="block text-sm font-semibold text-gray-700">2. Environment Map (Optional)</label>
+                            </Panel>
+
+                            <Panel id="env" title="2. Environment Map (Optional)" isOpen={panels.env} onToggle={togglePanel}>
                                 <div>
                                     <label className="flex items-center justify-center w-full px-4 py-2 border-2 border-dashed border-gray-300 rounded-md cursor-pointer hover:border-blue-500 hover:bg-blue-50 transition-colors">
                                         <svg className="w-5 h-5 mr-2 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
@@ -1184,9 +1377,21 @@
                                         <input type="file" accept="image/png, image/jpeg, image/webp" className="hidden" onChange={handleBgUpload} />
                                     </label>
                                 </div>
+                                
+                                <div className="pt-2">
+                                    <span className="text-[10px] text-gray-500 font-bold uppercase block mb-2">Or Use A Preset</span>
+                                    <div className="grid grid-cols-4 gap-2">
+                                        {ENV_PRESETS.map(p => (
+                                            <button key={p.id} onClick={() => applyEnvPreset(p.id)} className="w-full aspect-square rounded border border-gray-200 hover:border-blue-500 hover:shadow-sm transition-all overflow-hidden focus:outline-none" title={p.name}>
+                                                <div className="w-full h-full" style={{ background: p.css }}></div>
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+
                                 {bgInput && (
-                                    <div className="space-y-4 pt-2 animate-fade-in bg-gray-50 p-4 rounded-lg border border-gray-100">
-                                        <p className="text-xs font-semibold text-gray-700 border-b border-gray-200 pb-1">Input Levels</p>
+                                    <div className="space-y-4 pt-4 animate-fade-in">
+                                        <p className="text-[10px] font-bold text-gray-500 uppercase border-b border-gray-200 pb-1">Input Levels</p>
                                         <div>
                                             <div className="flex justify-between items-center mb-1">
                                                 <span className="text-[10px] text-gray-500 font-medium uppercase">Shadows (Black Point)</span>
@@ -1216,7 +1421,8 @@
                                             </div>
                                             <input type="range" min="1" max="100" step="1" value={envHighlights} onChange={(e) => setEnvHighlights(parseInt(e.target.value))} className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-gray-300" />
                                         </div>
-                                        <p className="text-xs font-semibold text-gray-700 border-b border-gray-200 pt-2 pb-1">Output Levels</p>
+                                        
+                                        <p className="text-[10px] font-bold text-gray-500 uppercase border-b border-gray-200 pt-2 pb-1">Output Levels</p>
                                         <div>
                                             <div className="flex justify-between items-center mb-1">
                                                 <span className="text-[10px] text-gray-500 font-medium uppercase">Output Black</span>
@@ -1237,49 +1443,18 @@
                                             </div>
                                             <input type="range" min="0" max="100" step="1" value={envOutputWhite} onChange={(e) => setEnvOutputWhite(parseInt(e.target.value))} className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-gray-300" />
                                         </div>
-                                        <button onClick={() => setBgInput(null)} className="text-xs text-red-600 hover:text-red-800 font-medium w-full text-center pt-3 border-t border-gray-200 mt-2">✕ Remove Background Map</button>
+                                        
+                                        <button onClick={() => setBgInput(null)} className="text-xs text-red-600 hover:text-red-800 font-medium w-full text-center pt-2">✕ Remove Background Map</button>
                                     </div>
                                 )}
-                            </div>
-                            <hr className="border-gray-100" />
-                            <div className="space-y-4">
-                                <label className="block text-sm font-semibold text-gray-700">3. Canvas & Margins</label>
-                                <select className="w-full p-2 text-sm border border-gray-300 rounded-md bg-white focus:ring-2 focus:ring-blue-500 outline-none" value={format} onChange={(e) => setFormat(e.target.value === 'custom' ? 'custom' : parseFloat(e.target.value))}>
-                                    {FORMATS.map(f => <option key={f.name} value={f.aspectRatio}>{f.name}</option>)}
-                                    <option value="custom">Custom Dimensions (px)</option>
-                                </select>
-                                
-                                {format === 'custom' && (
-                                    <div className="grid grid-cols-2 gap-3 pt-2">
-                                        <div>
-                                            <span className="text-[10px] text-gray-500 font-bold uppercase block mb-1">Width (px)</span>
-                                            <input type="number" value={customW} onChange={(e) => setCustomW(parseInt(e.target.value) || 0)} className="w-full p-1.5 text-xs border border-gray-300 rounded bg-white focus:outline-none focus:ring-1 focus:ring-blue-500" />
-                                        </div>
-                                        <div>
-                                            <span className="text-[10px] text-gray-500 font-bold uppercase block mb-1">Height (px)</span>
-                                            <input type="number" value={customH} onChange={(e) => setCustomH(parseInt(e.target.value) || 0)} className="w-full p-1.5 text-xs border border-gray-300 rounded bg-white focus:outline-none focus:ring-1 focus:ring-blue-500" />
-                                        </div>
-                                    </div>
-                                )}
+                            </Panel>
 
-                                <div className="grid grid-cols-2 gap-3 pt-3 border-t border-gray-100 mt-3">
-                                    {[["marginTop", setMarginTop, "Top"], ["marginBottom", setMarginBottom, "Bottom"], ["marginLeft", setMarginLeft, "Left"], ["marginRight", setMarginRight, "Right"]].map(([key, setter, label]) => (
-                                        <div key={key}>
-                                            <div className="flex justify-between items-center mb-1">
-                                                <span className="text-[10px] text-gray-500 font-medium uppercase">{label}</span>
-                                                <div className="flex items-center">
-                                                    <input type="number" min="0" max="40" step="1" value={eval(key)} onChange={(e) => setter(parseInt(e.target.value) || 0)} className="w-10 text-right text-[10px] font-mono border border-gray-200 rounded px-1 outline-none focus:border-gray-500" />
-                                                    <span className="text-[10px] text-gray-400 ml-0.5">%</span>
-                                                </div>
-                                            </div>
-                                            <input type="range" min="0" max="40" step="1" value={eval(key)} onChange={(e) => setter(parseInt(e.target.value))} className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-gray-500" />
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
-                            <hr className="border-gray-100" />
-                            <div className="space-y-5">
-                                <label className="block text-sm font-semibold text-gray-700">4. Grid Structure</label>
+                            <Panel id="graphics" title="3. Graphics Libraries" isOpen={panels.graphics} onToggle={togglePanel}>
+                                {renderLibrary('black', 'Dark Modules (Primary)', graphicsBlack)}
+                                {renderLibrary('white', 'Light Modules (Secondary)', graphicsWhite)}
+                            </Panel>
+
+                            <Panel id="grid" title="4. Grid Structure" isOpen={panels.grid} onToggle={togglePanel}>
                                 <div>
                                     <div className="flex justify-between items-center mb-1">
                                         <span className="text-xs text-gray-500 font-medium">Smallest Square Size</span>
@@ -1313,16 +1488,44 @@
                                 <div className="space-y-2 mt-2 border-t border-gray-100 pt-3">
                                     <label className="flex items-center space-x-2 cursor-pointer"><input type="checkbox" checked={invertChecker} onChange={(e) => setInvertChecker(e.target.checked)} className="rounded text-blue-600 focus:ring-blue-500 w-4 h-4 cursor-pointer" /><span className="text-sm text-gray-700 font-medium">Invert Global Checker Parity</span></label>
                                 </div>
-                            </div>
-                            <hr className="border-gray-100" />
-                            <div className="space-y-4">
-                                <label className="block text-sm font-semibold text-gray-700">5. Graphics Libraries</label>
-                                {renderLibrary('black', 'Dark Modules (Primary)', graphicsBlack)}
-                                {renderLibrary('white', 'Light Modules (Secondary)', graphicsWhite)}
-                            </div>
-                            <hr className="border-gray-100" />
-                            <div className="space-y-4">
-                                <label className="block text-sm font-semibold text-gray-700">6. Export Settings</label>
+                            </Panel>
+
+                            <Panel id="canvas" title="5. Canvas & Margins" isOpen={panels.canvas} onToggle={togglePanel}>
+                                <select className="w-full p-2 text-sm border border-gray-300 rounded-md bg-white focus:ring-2 focus:ring-blue-500 outline-none" value={format} onChange={(e) => setFormat(e.target.value === 'custom' ? 'custom' : parseFloat(e.target.value))}>
+                                    {FORMATS.map(f => <option key={f.name} value={f.aspectRatio}>{f.name}</option>)}
+                                    <option value="custom">Custom Dimensions (px)</option>
+                                </select>
+                                
+                                {format === 'custom' && (
+                                    <div className="grid grid-cols-2 gap-3 pt-2">
+                                        <div>
+                                            <span className="text-[10px] text-gray-500 font-bold uppercase block mb-1">Width (px)</span>
+                                            <input type="number" value={customW} onChange={(e) => setCustomW(parseInt(e.target.value) || 0)} className="w-full p-1.5 text-xs border border-gray-300 rounded bg-white focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                                        </div>
+                                        <div>
+                                            <span className="text-[10px] text-gray-500 font-bold uppercase block mb-1">Height (px)</span>
+                                            <input type="number" value={customH} onChange={(e) => setCustomH(parseInt(e.target.value) || 0)} className="w-full p-1.5 text-xs border border-gray-300 rounded bg-white focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                                        </div>
+                                    </div>
+                                )}
+
+                                <div className="grid grid-cols-2 gap-3 pt-3 border-t border-gray-100 mt-3">
+                                    {[["marginTop", setMarginTop, "Top"], ["marginBottom", setMarginBottom, "Bottom"], ["marginLeft", setMarginLeft, "Left"], ["marginRight", setMarginRight, "Right"]].map(([key, setter, label]) => (
+                                        <div key={key}>
+                                            <div className="flex justify-between items-center mb-1">
+                                                <span className="text-[10px] text-gray-500 font-medium uppercase">{label}</span>
+                                                <div className="flex items-center">
+                                                    <input type="number" min="0" max="40" step="1" value={eval(key)} onChange={(e) => setter(parseInt(e.target.value) || 0)} className="w-10 text-right text-[10px] font-mono border border-gray-200 rounded px-1 outline-none focus:border-gray-500" />
+                                                    <span className="text-[10px] text-gray-400 ml-0.5">%</span>
+                                                </div>
+                                            </div>
+                                            <input type="range" min="0" max="40" step="1" value={eval(key)} onChange={(e) => setter(parseInt(e.target.value))} className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-gray-500" />
+                                        </div>
+                                    ))}
+                                </div>
+                            </Panel>
+
+                            <Panel id="export" title="6. Export Settings" isOpen={panels.export} onToggle={togglePanel}>
                                 <div>
                                     <div className="flex justify-between items-center mb-1">
                                         <span className="text-[10px] text-gray-500 font-medium uppercase">PNG Resolution (Shorter Edge)</span>
@@ -1333,7 +1536,8 @@
                                     </div>
                                     <input type="range" min="1000" max="3000" step="100" value={pngResolution} onChange={(e) => setPngResolution(parseInt(e.target.value))} className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600" />
                                 </div>
-                            </div>
+                            </Panel>
+
                         </div>
                         <div className="absolute bottom-0 left-0 right-0 p-5 bg-white border-t border-gray-200 shadow-[0_-10px_15px_-3px_rgba(0,0,0,0.05)] z-20 flex gap-3">
                             <button onClick={downloadFinalSvg} disabled={!baseSvgCode || isGenerating} className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-3 rounded-md shadow transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center text-xs">
