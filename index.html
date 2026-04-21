@@ -77,6 +77,7 @@
             alignV: 'center',
             offsetX: 0,
             offsetY: 0,
+            layerSpreadOffset: 0, // Individual spread adjustment
             borderEnabled: false,
             borderThicknessIndex: 0,
             borderPosition: 'outside',
@@ -575,25 +576,22 @@
                 
                 // Draw Blurred Mask (imgDataMask)
                 ctx.clearRect(0, 0, W, H);
-                if (transitionSpread > 0) {
-                    ctx.filter = `blur(${transitionSpread}px)`;
-                    for (let idx = targetObjects.length - 1; idx >= 0; idx--) {
-                        const obj = targetObjects[idx];
-                        const img = loadedImgs[idx];
-                        if (!img || obj.isVisible === false) continue;
-                        const { drawW, drawH, dx, dy } = getObjTransform(obj, img, innerW, innerH, offsetX, offsetY);
-                        ctx.drawImage(img, dx, dy, drawW, drawH);
+                for (let idx = targetObjects.length - 1; idx >= 0; idx--) {
+                    const obj = targetObjects[idx];
+                    const img = loadedImgs[idx];
+                    if (!img || obj.isVisible === false) continue;
+                    
+                    const effectiveSpread = Math.max(0, transitionSpread + (obj.layerSpreadOffset || 0));
+                    if (effectiveSpread > 0) {
+                        ctx.filter = `blur(${effectiveSpread}px)`;
+                    } else {
+                        ctx.filter = 'none';
                     }
-                    ctx.filter = 'none';
-                } else {
-                    for (let idx = targetObjects.length - 1; idx >= 0; idx--) {
-                        const obj = targetObjects[idx];
-                        const img = loadedImgs[idx];
-                        if (!img || obj.isVisible === false) continue;
-                        const { drawW, drawH, dx, dy } = getObjTransform(obj, img, innerW, innerH, offsetX, offsetY);
-                        ctx.drawImage(img, dx, dy, drawW, drawH);
-                    }
+                    
+                    const { drawW, drawH, dx, dy } = getObjTransform(obj, img, innerW, innerH, offsetX, offsetY);
+                    ctx.drawImage(img, dx, dy, drawW, drawH);
                 }
+                ctx.filter = 'none'; // reset filter
                 const imgDataMask = ctx.getImageData(0, 0, W, H).data;
 
                 // Draw Environment Background
@@ -894,7 +892,15 @@
                     const img = loadedImgs[idx];
                     if (obj.isVisible !== false && obj.processMode === 'original' && img) {
                         const { drawW, drawH, dx, dy } = getObjTransform(obj, img, innerW, innerH, offsetX, offsetY);
-                        svgCode += `<image x="${dx}" y="${dy}" width="${drawW}" height="${drawH}" href="${img.src}" preserveAspectRatio="none" />\n`;
+                        
+                        let hrefStr = img.src;
+                        // Use inline base64 for SVGs instead of volatile blob URLs to ensure proper rendering and export
+                        if ((!obj.inputType || obj.inputType === 'svg') && obj.svgInput) {
+                            const fixedSvgStr = ensureSvgDimensions(obj.svgInput);
+                            hrefStr = "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(fixedSvgStr)));
+                        }
+                        
+                        svgCode += `<image x="${dx}" y="${dy}" width="${drawW}" height="${drawH}" href="${hrefStr}" preserveAspectRatio="none" />\n`;
                     }
                 }
 
@@ -1409,7 +1415,18 @@
                                                         <input type="range" min="0.1" max="1.5" step="0.01" value={obj.objectScale} onChange={(e) => updateTargetObject(obj.id, 'objectScale', parseFloat(e.target.value))} className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600" />
                                                     </div>
 
-                                                    <div className="grid grid-cols-2 gap-3 pt-2">
+                                                    <div className="pt-2 border-t border-gray-100">
+                                                        <div className="flex justify-between items-center mb-1">
+                                                            <span className="text-[10px] text-gray-500 font-bold uppercase block mb-1">Spread Offset (±)</span>
+                                                            <div className="flex items-center">
+                                                                <input type="number" min="-150" max="150" step="1" value={obj.layerSpreadOffset || 0} onChange={(e) => updateTargetObject(obj.id, 'layerSpreadOffset', parseInt(e.target.value) || 0)} className="w-14 text-right text-[10px] font-mono border border-gray-200 rounded px-1 py-0.5 outline-none focus:border-gray-500" />
+                                                                <span className="text-[10px] text-gray-400 ml-1">px</span>
+                                                            </div>
+                                                        </div>
+                                                        <input type="range" min="-150" max="150" step="1" value={obj.layerSpreadOffset || 0} onChange={(e) => updateTargetObject(obj.id, 'layerSpreadOffset', parseInt(e.target.value))} className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-gray-500" />
+                                                    </div>
+
+                                                    <div className="grid grid-cols-2 gap-3 pt-2 border-t border-gray-100 mt-2">
                                                         <div>
                                                             <span className="text-[10px] text-gray-500 font-bold uppercase block mb-1">Align H</span>
                                                             <select className="w-full p-1.5 text-[10px] border border-gray-300 rounded bg-white focus:outline-none focus:ring-1 focus:ring-blue-500" value={obj.alignH} onChange={(e) => updateTargetObject(obj.id, 'alignH', e.target.value)}>
