@@ -25,6 +25,10 @@
         input[type="color"] { -webkit-appearance: none; border: none; padding: 0; outline: none; }
         input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
         input[type="color"]::-webkit-color-swatch { border: 1px solid #e2e8f0; border-radius: 4px; }
+        /* Numeric Input reset */
+        input[type=number]::-webkit-inner-spin-button, 
+        input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+        input[type=number] { -moz-appearance: textfield; }
     </style>
 </head>
 <body>
@@ -50,9 +54,9 @@
 
         const defaultTargetObject = {
             id: 'obj-' + Date.now(),
+            name: 'New Layer',
+            isExpanded: true,
             isVisible: true,
-            isSolidFill: false,
-            solidFillColor: 'black',
             svgInput: defaultSVG,
             objectScale: 0.85,
             alignH: 'center',
@@ -113,7 +117,7 @@
 
         const App = () => {
             // Target Objects State (Multiple SVGs)
-            const [targetObjects, setTargetObjects] = useState([defaultTargetObject]);
+            const [targetObjects, setTargetObjects] = useState([{ ...defaultTargetObject, name: 'Layer 1' }]);
             const [coreModuleIndex, setCoreModuleIndex] = useState(0); 
 
             // Environment State
@@ -211,12 +215,18 @@
                         const config = JSON.parse(event.target.result);
                         
                         if (config.targetObjects !== undefined) {
-                            setTargetObjects(config.targetObjects.map(obj => ({...defaultTargetObject, ...obj})));
+                            setTargetObjects(config.targetObjects.map((obj, i) => ({
+                                ...defaultTargetObject, 
+                                name: `Layer ${i + 1}`,
+                                isExpanded: true,
+                                ...obj 
+                            })));
                         } else if (config.svgInput !== undefined) {
                             // Legacy single-object support
                             setTargetObjects([{
                                 ...defaultTargetObject,
                                 id: 'legacy-' + Date.now(),
+                                name: 'Imported Layer',
                                 svgInput: config.svgInput,
                                 objectScale: config.objectScale || 0.85,
                                 borderEnabled: config.borderEnabled || false,
@@ -313,7 +323,7 @@
 
             const generateMesh = async () => {
                 // Check if there are valid layers to render
-                const hasValidLayer = targetObjects.some(t => t.isVisible !== false && (t.isSolidFill || t.svgInput.trim()));
+                const hasValidLayer = targetObjects.some(t => t.isVisible !== false && t.svgInput.trim());
                 if (!hasValidLayer) return;
 
                 setIsGenerating(true);
@@ -344,38 +354,11 @@
 
                     const adaptedMinSize = ((S_max_x + S_max_y) / 2) / Math.pow(2, subdivisions);
 
-                    // Load SVGs or Generate Solid Fill SVGs
+                    // Load SVGs 
                     const loadedImgs = await Promise.all(targetObjects.map(obj => {
                         if (obj.isVisible === false) return Promise.resolve(null);
-                        
                         let svgStr = obj.svgInput?.trim();
-                        if (!svgStr && !obj.isSolidFill) return Promise.resolve(null);
-                        
-                        if (obj.isSolidFill) {
-                            const color = obj.solidFillColor || 'black';
-                            try {
-                                if(!svgStr || svgStr === '') svgStr = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100"/></svg>`;
-                                const parser = new DOMParser();
-                                const doc = parser.parseFromString(svgStr, "image/svg+xml");
-                                const elements = doc.querySelectorAll('*');
-                                elements.forEach(el => {
-                                    const tagName = el.tagName.toLowerCase();
-                                    if (['path', 'rect', 'circle', 'ellipse', 'polygon', 'polyline', 'line', 'text', 'g', 'svg'].includes(tagName)) {
-                                        if (el.hasAttribute('fill') && el.getAttribute('fill') === 'none') return;
-                                        el.setAttribute('fill', color);
-                                        el.style.fill = color;
-                                        if (el.hasAttribute('stroke') && el.getAttribute('stroke') !== 'none') {
-                                            el.setAttribute('stroke', color);
-                                            el.style.stroke = color;
-                                        }
-                                    }
-                                });
-                                svgStr = new XMLSerializer().serializeToString(doc);
-                            } catch(e) {
-                                console.error("Failed to recolor SVG", e);
-                            }
-                        }
-                        
+                        if (!svgStr) return Promise.resolve(null);
                         return loadImage(svgStr, true);
                     }));
 
@@ -429,7 +412,7 @@
                     for (let idx = 0; idx < targetObjects.length; idx++) {
                         const obj = targetObjects[idx];
                         const img = loadedImgs[idx];
-                        if (!obj.borderEnabled || !img || obj.isSolidFill) continue;
+                        if (!obj.borderEnabled || !img) continue;
 
                         const { drawW, drawH, dx, dy } = getObjTransform(obj, img, innerW, innerH, offsetX, offsetY);
                         const objBorderAlpha = new Float32Array(W * H);
@@ -751,8 +734,23 @@
                 setTargetObjects(prev => [...prev, {
                     ...defaultTargetObject,
                     id: 'obj-' + Date.now() + '-' + Math.random(),
+                    name: `Layer ${prev.length + 1}`,
                     svgInput: '<svg></svg>'
                 }]);
+            };
+
+            const duplicateTargetObject = (id) => {
+                const objIndex = targetObjects.findIndex(obj => obj.id === id);
+                if (objIndex > -1) {
+                    const newObj = { 
+                        ...targetObjects[objIndex], 
+                        id: 'obj-' + Date.now() + '-' + Math.random(), 
+                        name: targetObjects[objIndex].name + ' (Copy)' 
+                    };
+                    const newTargets = [...targetObjects];
+                    newTargets.splice(objIndex + 1, 0, newObj);
+                    setTargetObjects(newTargets);
+                }
             };
 
             const updateTargetObject = (id, field, value) => {
@@ -912,17 +910,23 @@
                                         
                                         <div className="grid grid-cols-2 gap-3 pt-1">
                                             <div>
-                                                <div className="flex justify-between mb-1">
+                                                <div className="flex justify-between mb-1 items-center">
                                                     <span className="text-[9px] text-gray-500 uppercase">Frequency</span>
-                                                    <span className="text-[9px] font-mono text-gray-500">{g.ratio}%</span>
+                                                    <div className="flex items-center">
+                                                        <input type="number" min="0" max="100" step="1" value={g.ratio} onChange={(e) => updateGraphic(type, g.id, 'ratio', parseInt(e.target.value) || 0)} className="w-10 text-right text-[10px] font-mono border border-gray-200 rounded px-1 outline-none focus:border-blue-500" />
+                                                        <span className="text-[10px] text-gray-400 ml-0.5">%</span>
+                                                    </div>
                                                 </div>
                                                 <input type="range" min="0" max="100" value={g.ratio} onChange={(e) => updateGraphic(type, g.id, 'ratio', parseInt(e.target.value))} className="w-full h-1 bg-gray-200 rounded appearance-none cursor-pointer accent-blue-500" />
                                             </div>
                                             {!g.isDefault ? (
                                                 <div>
-                                                    <div className="flex justify-between mb-1">
+                                                    <div className="flex justify-between mb-1 items-center">
                                                         <span className="text-[9px] text-gray-500 uppercase">Scale Overlay</span>
-                                                        <span className="text-[9px] font-mono text-gray-500">{g.elementScale ?? 100}%</span>
+                                                        <div className="flex items-center">
+                                                            <input type="number" min="10" max="150" step="1" value={g.elementScale ?? 100} onChange={(e) => updateGraphic(type, g.id, 'elementScale', parseInt(e.target.value) || 0)} className="w-10 text-right text-[10px] font-mono border border-gray-200 rounded px-1 outline-none focus:border-green-500" />
+                                                            <span className="text-[10px] text-gray-400 ml-0.5">%</span>
+                                                        </div>
                                                     </div>
                                                     <input type="range" min="10" max="150" value={g.elementScale ?? 100} onChange={(e) => updateGraphic(type, g.id, 'elementScale', parseInt(e.target.value))} className="w-full h-1 bg-gray-200 rounded appearance-none cursor-pointer accent-green-500" />
                                                 </div>
@@ -947,7 +951,10 @@
                                             <div className="grid grid-cols-3 gap-2 items-center pt-1 border-t border-gray-100 mt-1">
                                                 <div className="col-span-3 flex justify-between items-center mb-1">
                                                     <span className="text-[9px] text-gray-500 uppercase">Graphic Border</span>
-                                                    <span className="text-[9px] font-mono text-gray-500">{g.borderSize || 0}px</span>
+                                                    <div className="flex items-center">
+                                                        <input type="number" min="0" max="20" step="1" value={g.borderSize || 0} onChange={(e) => updateGraphic(type, g.id, 'borderSize', parseInt(e.target.value) || 0)} className="w-10 text-right text-[10px] font-mono border border-gray-200 rounded px-1 outline-none focus:border-purple-500" />
+                                                        <span className="text-[10px] text-gray-400 ml-0.5">px</span>
+                                                    </div>
                                                 </div>
                                                 <div className="col-span-1">
                                                     <input type="range" min="0" max="20" step="1" value={g.borderSize || 0} onChange={(e) => updateGraphic(type, g.id, 'borderSize', parseInt(e.target.value))} className="w-full h-1 bg-gray-200 rounded appearance-none cursor-pointer accent-purple-500" />
@@ -1004,41 +1011,47 @@
                                 <div className="space-y-4">
                                     {targetObjects.map((obj, index) => (
                                         <div key={obj.id} className="border border-gray-200 rounded-lg bg-white overflow-hidden shadow-sm flex flex-col">
-                                            <div className="bg-gray-50 border-b border-gray-200 px-3 py-2 flex justify-between items-center">
-                                                <div className="flex items-center gap-2">
-                                                    <button onClick={() => updateTargetObject(obj.id, 'isVisible', obj.isVisible === false ? true : false)} className={`focus:outline-none transition-colors ${obj.isVisible === false ? 'text-gray-400 hover:text-gray-600' : 'text-blue-500 hover:text-blue-600'}`} title={obj.isVisible === false ? "Show layer" : "Hide layer"}>
+                                            
+                                            {/* Layer Header */}
+                                            <div className="bg-gray-50 border-b border-gray-200 px-3 py-2 flex justify-between items-center cursor-pointer hover:bg-gray-100 transition-colors" onClick={() => updateTargetObject(obj.id, 'isExpanded', obj.isExpanded === false ? true : false)}>
+                                                <div className="flex items-center gap-2 flex-1 min-w-0" onClick={e => e.stopPropagation()}>
+                                                    <button onClick={() => updateTargetObject(obj.id, 'isExpanded', obj.isExpanded === false ? true : false)} className="text-gray-400 hover:text-gray-700 flex-shrink-0 focus:outline-none">
+                                                        {obj.isExpanded === false ? (
+                                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5l7 7-7 7" /></svg>
+                                                        ) : (
+                                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" /></svg>
+                                                        )}
+                                                    </button>
+                                                    <button onClick={() => updateTargetObject(obj.id, 'isVisible', obj.isVisible === false ? true : false)} className={`focus:outline-none transition-colors flex-shrink-0 ${obj.isVisible === false ? 'text-gray-400 hover:text-gray-600' : 'text-blue-500 hover:text-blue-600'}`} title={obj.isVisible === false ? "Show layer" : "Hide layer"}>
                                                         {obj.isVisible === false ? (
                                                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" /></svg>
                                                         ) : (
                                                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
                                                         )}
                                                     </button>
-                                                    <span className="text-xs font-bold text-gray-700">Layer {index + 1}</span>
-                                                </div>
-                                                {targetObjects.length > 1 && (
-                                                    <button onClick={() => removeTargetObject(obj.id)} className="text-gray-400 hover:text-red-500 transition-colors">
-                                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
-                                                    </button>
-                                                )}
-                                            </div>
-                                            <div className={`p-3 space-y-4 transition-opacity ${obj.isVisible === false ? 'opacity-40 grayscale' : ''}`}>
-                                                <div className="flex items-center justify-between mb-2 pb-2 border-b border-gray-100">
-                                                    <span className="text-[10px] text-gray-500 font-bold uppercase">Layer Type</span>
-                                                    <label className="flex items-center space-x-2 cursor-pointer">
-                                                        <input type="checkbox" checked={obj.isSolidFill || false} onChange={(e) => updateTargetObject(obj.id, 'isSolidFill', e.target.checked)} className="rounded text-blue-600 focus:ring-blue-500 w-3.5 h-3.5" />
-                                                        <span className="text-[10px] font-bold text-gray-600">Fill with colour</span>
-                                                    </label>
+                                                    
+                                                    {/* SVG Thumbnail */}
+                                                    <div className="w-6 h-6 flex-shrink-0 bg-white border border-gray-200 rounded flex items-center justify-center overflow-hidden [&>svg]:w-full [&>svg]:h-full [&>svg]:object-contain" dangerouslySetInnerHTML={{ __html: obj.svgInput || '' }} />
+
+                                                    {/* Editable Name */}
+                                                    <input type="text" value={obj.name || `Layer ${index + 1}`} onChange={(e) => updateTargetObject(obj.id, 'name', e.target.value)} className="text-xs font-bold text-gray-700 bg-transparent border border-transparent hover:border-gray-300 focus:bg-white focus:border-blue-500 rounded px-1.5 py-0.5 outline-none w-full min-w-0 truncate transition-colors" />
                                                 </div>
 
-                                                {obj.isSolidFill ? (
-                                                    <div className="animate-fade-in bg-blue-50 p-2 rounded border border-blue-100">
-                                                        <span className="text-[10px] text-blue-700 font-bold uppercase block mb-1">Force Fill Color</span>
-                                                        <select className="w-full p-1.5 text-[10px] border border-blue-200 rounded bg-white focus:outline-none focus:ring-1 focus:ring-blue-500 text-blue-900" value={obj.solidFillColor || 'black'} onChange={(e) => updateTargetObject(obj.id, 'solidFillColor', e.target.value)}>
-                                                            <option value="black">Black</option>
-                                                            <option value="white">White</option>
-                                                        </select>
-                                                    </div>
-                                                ) : (
+                                                <div className="flex items-center gap-1.5 ml-2 flex-shrink-0" onClick={e => e.stopPropagation()}>
+                                                    <button onClick={() => duplicateTargetObject(obj.id)} className="text-gray-400 hover:text-blue-500 transition-colors" title="Duplicate Layer">
+                                                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                                                    </button>
+                                                    {targetObjects.length > 1 && (
+                                                        <button onClick={() => removeTargetObject(obj.id)} className="text-gray-400 hover:text-red-500 transition-colors" title="Delete Layer">
+                                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                                                        </button>
+                                                    )}
+                                                </div>
+                                            </div>
+
+                                            {/* Layer Body */}
+                                            {obj.isExpanded !== false && (
+                                                <div className={`p-3 space-y-4 transition-opacity ${obj.isVisible === false ? 'opacity-40 grayscale' : ''}`}>
                                                     <div className="animate-fade-in mb-2">
                                                         <label className="flex items-center justify-center w-full px-3 py-1.5 border border-dashed border-gray-300 rounded cursor-pointer hover:border-blue-500 hover:bg-blue-50 transition-colors">
                                                             <span className="text-xs text-gray-600 font-medium">Upload .SVG file</span>
@@ -1046,101 +1059,116 @@
                                                         </label>
                                                         <textarea className="w-full mt-2 text-[10px] font-mono p-2 border border-gray-200 rounded bg-gray-50 focus:ring-1 focus:ring-blue-500 focus:outline-none resize-y" rows="2" value={obj.svgInput} onChange={(e) => updateTargetObject(obj.id, 'svgInput', e.target.value)} placeholder="...or paste raw <svg> code here" />
                                                     </div>
-                                                )}
-                                                
-                                                <div className="pt-2 border-t border-gray-100">
-                                                    <div className="flex justify-between mb-1">
-                                                        <span className="text-[10px] text-gray-500 font-bold uppercase">Layer Scale</span>
-                                                        <span className="text-[10px] font-mono bg-gray-100 px-1 rounded">{(obj.objectScale * 100).toFixed(0)}%</span>
-                                                    </div>
-                                                    <input type="range" min="0.1" max="1.5" step="0.05" value={obj.objectScale} onChange={(e) => updateTargetObject(obj.id, 'objectScale', parseFloat(e.target.value))} className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600" />
-                                                </div>
-
-                                                <div className="grid grid-cols-2 gap-3 pt-2">
-                                                    <div>
-                                                        <span className="text-[10px] text-gray-500 font-bold uppercase block mb-1">Align H</span>
-                                                        <select className="w-full p-1.5 text-[10px] border border-gray-300 rounded bg-white focus:outline-none focus:ring-1 focus:ring-blue-500" value={obj.alignH} onChange={(e) => updateTargetObject(obj.id, 'alignH', e.target.value)}>
-                                                            <option value="left">Left</option>
-                                                            <option value="center">Center</option>
-                                                            <option value="right">Right</option>
-                                                        </select>
-                                                        <div className="mt-2">
-                                                            <div className="flex justify-between mb-1">
-                                                                <span className="text-[9px] text-gray-400">Offset X</span>
-                                                                <span className="text-[9px] font-mono">{obj.offsetX}%</span>
+                                                    
+                                                    <div className="pt-2 border-t border-gray-100">
+                                                        <div className="flex justify-between items-center mb-1">
+                                                            <span className="text-[10px] text-gray-500 font-bold uppercase block mb-1">Layer Scale</span>
+                                                            <div className="flex items-center">
+                                                                <input type="number" min="0.1" max="1.5" step="0.01" value={obj.objectScale} onChange={(e) => updateTargetObject(obj.id, 'objectScale', parseFloat(e.target.value) || 0)} className="w-14 text-right text-[10px] font-mono border border-gray-200 rounded px-1 py-0.5 outline-none focus:border-blue-500" />
+                                                                <span className="text-[10px] text-gray-400 ml-1">x</span>
                                                             </div>
-                                                            <input type="range" min="-100" max="100" step="1" value={obj.offsetX} onChange={(e) => updateTargetObject(obj.id, 'offsetX', parseInt(e.target.value))} className="w-full h-1 bg-gray-200 rounded appearance-none cursor-pointer accent-gray-500" />
                                                         </div>
+                                                        <input type="range" min="0.1" max="1.5" step="0.01" value={obj.objectScale} onChange={(e) => updateTargetObject(obj.id, 'objectScale', parseFloat(e.target.value))} className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600" />
                                                     </div>
-                                                    <div>
-                                                        <span className="text-[10px] text-gray-500 font-bold uppercase block mb-1">Align V</span>
-                                                        <select className="w-full p-1.5 text-[10px] border border-gray-300 rounded bg-white focus:outline-none focus:ring-1 focus:ring-blue-500" value={obj.alignV} onChange={(e) => updateTargetObject(obj.id, 'alignV', e.target.value)}>
-                                                            <option value="top">Top</option>
-                                                            <option value="center">Center</option>
-                                                            <option value="bottom">Bottom</option>
-                                                        </select>
-                                                        <div className="mt-2">
-                                                            <div className="flex justify-between mb-1">
-                                                                <span className="text-[9px] text-gray-400">Offset Y</span>
-                                                                <span className="text-[9px] font-mono">{obj.offsetY}%</span>
-                                                            </div>
-                                                            <input type="range" min="-100" max="100" step="1" value={obj.offsetY} onChange={(e) => updateTargetObject(obj.id, 'offsetY', parseInt(e.target.value))} className="w-full h-1 bg-gray-200 rounded appearance-none cursor-pointer accent-gray-500" />
-                                                        </div>
-                                                    </div>
-                                                </div>
 
-                                                <div className="pt-2 border-t border-gray-100">
-                                                    <label className="flex items-center space-x-2 cursor-pointer mb-2">
-                                                        <input type="checkbox" checked={obj.borderEnabled} onChange={(e) => updateTargetObject(obj.id, 'borderEnabled', e.target.checked)} className="rounded text-blue-600 focus:ring-blue-500 w-3.5 h-3.5 cursor-pointer" />
-                                                        <span className="text-[11px] text-gray-700 font-bold">Layer Border</span>
-                                                    </label>
-                                                    {obj.borderEnabled && (
-                                                        <div className="bg-gray-50 p-2 rounded border border-gray-100 space-y-3 animate-fade-in">
-                                                            {!obj.borderBlurEnabled && (
-                                                                <div>
-                                                                    <div className="flex justify-between mb-1">
-                                                                        <span className="text-[9px] text-gray-600 font-bold uppercase">Thickness</span>
-                                                                        <span className="text-[9px] font-mono bg-white px-1 border border-gray-200 rounded">{minSquareSize * Math.pow(2, Math.min(obj.borderThicknessIndex, subdivisions))}px</span>
+                                                    <div className="grid grid-cols-2 gap-3 pt-2">
+                                                        <div>
+                                                            <span className="text-[10px] text-gray-500 font-bold uppercase block mb-1">Align H</span>
+                                                            <select className="w-full p-1.5 text-[10px] border border-gray-300 rounded bg-white focus:outline-none focus:ring-1 focus:ring-blue-500" value={obj.alignH} onChange={(e) => updateTargetObject(obj.id, 'alignH', e.target.value)}>
+                                                                <option value="left">Left</option>
+                                                                <option value="center">Center</option>
+                                                                <option value="right">Right</option>
+                                                            </select>
+                                                            <div className="mt-2">
+                                                                <div className="flex justify-between items-center mb-1">
+                                                                    <span className="text-[9px] text-gray-400 uppercase">Offset X</span>
+                                                                    <div className="flex items-center">
+                                                                        <input type="number" min="-100" max="100" step="1" value={obj.offsetX} onChange={(e) => updateTargetObject(obj.id, 'offsetX', parseInt(e.target.value) || 0)} className="w-10 text-right text-[10px] font-mono border border-gray-200 rounded px-1 outline-none focus:border-gray-500" />
+                                                                        <span className="text-[10px] text-gray-400 ml-0.5">%</span>
                                                                     </div>
-                                                                    <input type="range" min="0" max={subdivisions} step="1" value={obj.borderThicknessIndex} onChange={(e) => updateTargetObject(obj.id, 'borderThicknessIndex', parseInt(e.target.value))} className="w-full h-1 bg-gray-200 rounded appearance-none cursor-pointer accent-blue-500" />
                                                                 </div>
-                                                            )}
-                                                            <div className="grid grid-cols-2 gap-2">
-                                                                <div>
-                                                                    <span className="text-[9px] text-gray-500 font-bold uppercase block mb-1">Position</span>
-                                                                    <select className="w-full p-1 text-[10px] border border-gray-300 rounded bg-white focus:outline-none focus:ring-1 focus:ring-blue-500" value={obj.borderPosition} onChange={(e) => updateTargetObject(obj.id, 'borderPosition', e.target.value)}>
-                                                                        <option value="outside">Outside</option>
-                                                                        <option value="inside">Inside</option>
-                                                                        <option value="centered">Centered</option>
-                                                                    </select>
-                                                                </div>
-                                                                <div>
-                                                                    <span className="text-[9px] text-gray-500 font-bold uppercase block mb-1">Color</span>
-                                                                    <select className="w-full p-1 text-[10px] border border-gray-300 rounded bg-white focus:outline-none focus:ring-1 focus:ring-blue-500" value={obj.borderColour} onChange={(e) => updateTargetObject(obj.id, 'borderColour', e.target.value)}>
-                                                                        <option value="black">Black</option>
-                                                                        <option value="white">White</option>
-                                                                    </select>
-                                                                </div>
+                                                                <input type="range" min="-100" max="100" step="1" value={obj.offsetX} onChange={(e) => updateTargetObject(obj.id, 'offsetX', parseInt(e.target.value))} className="w-full h-1 bg-gray-200 rounded appearance-none cursor-pointer accent-gray-500" />
                                                             </div>
-                                                            <div className="pt-2 border-t border-gray-200">
-                                                                <label className="flex items-center space-x-2 cursor-pointer mb-2">
-                                                                    <input type="checkbox" checked={obj.borderBlurEnabled} onChange={(e) => updateTargetObject(obj.id, 'borderBlurEnabled', e.target.checked)} className="rounded text-blue-500 focus:ring-blue-500 w-3.5 h-3.5 cursor-pointer" />
-                                                                    <span className="text-[10px] text-gray-600 font-bold">Dither Border (Blur)</span>
-                                                                </label>
-                                                                {obj.borderBlurEnabled && (
-                                                                    <div className="animate-fade-in">
-                                                                        <div className="flex justify-between mb-1">
-                                                                            <span className="text-[9px] text-gray-500 font-bold uppercase">Blur Spread</span>
-                                                                            <span className="text-[9px] font-mono bg-white px-1 border border-gray-200 rounded">{obj.borderBlurAmount}</span>
+                                                        </div>
+                                                        <div>
+                                                            <span className="text-[10px] text-gray-500 font-bold uppercase block mb-1">Align V</span>
+                                                            <select className="w-full p-1.5 text-[10px] border border-gray-300 rounded bg-white focus:outline-none focus:ring-1 focus:ring-blue-500" value={obj.alignV} onChange={(e) => updateTargetObject(obj.id, 'alignV', e.target.value)}>
+                                                                <option value="top">Top</option>
+                                                                <option value="center">Center</option>
+                                                                <option value="bottom">Bottom</option>
+                                                            </select>
+                                                            <div className="mt-2">
+                                                                <div className="flex justify-between items-center mb-1">
+                                                                    <span className="text-[9px] text-gray-400 uppercase">Offset Y</span>
+                                                                    <div className="flex items-center">
+                                                                        <input type="number" min="-100" max="100" step="1" value={obj.offsetY} onChange={(e) => updateTargetObject(obj.id, 'offsetY', parseInt(e.target.value) || 0)} className="w-10 text-right text-[10px] font-mono border border-gray-200 rounded px-1 outline-none focus:border-gray-500" />
+                                                                        <span className="text-[10px] text-gray-400 ml-0.5">%</span>
+                                                                    </div>
+                                                                </div>
+                                                                <input type="range" min="-100" max="100" step="1" value={obj.offsetY} onChange={(e) => updateTargetObject(obj.id, 'offsetY', parseInt(e.target.value))} className="w-full h-1 bg-gray-200 rounded appearance-none cursor-pointer accent-gray-500" />
+                                                            </div>
+                                                        </div>
+                                                    </div>
+
+                                                    <div className="pt-2 border-t border-gray-100">
+                                                        <label className="flex items-center space-x-2 cursor-pointer mb-2">
+                                                            <input type="checkbox" checked={obj.borderEnabled} onChange={(e) => updateTargetObject(obj.id, 'borderEnabled', e.target.checked)} className="rounded text-blue-600 focus:ring-blue-500 w-3.5 h-3.5 cursor-pointer" />
+                                                            <span className="text-[11px] text-gray-700 font-bold">Layer Border</span>
+                                                        </label>
+                                                        {obj.borderEnabled && (
+                                                            <div className="bg-gray-50 p-2 rounded border border-gray-100 space-y-3 animate-fade-in">
+                                                                {!obj.borderBlurEnabled && (
+                                                                    <div>
+                                                                        <div className="flex justify-between items-center mb-1">
+                                                                            <span className="text-[9px] text-gray-600 font-bold uppercase">Thickness Level</span>
+                                                                            <div className="flex items-center">
+                                                                                <input type="number" min="0" max={subdivisions} step="1" value={obj.borderThicknessIndex} onChange={(e) => updateTargetObject(obj.id, 'borderThicknessIndex', parseInt(e.target.value) || 0)} className="w-10 text-right text-[10px] font-mono border border-gray-200 rounded px-1 outline-none focus:border-blue-500" />
+                                                                                <span className="text-[10px] text-gray-400 ml-0.5">lvl</span>
+                                                                            </div>
                                                                         </div>
-                                                                        <input type="range" min="5" max="150" step="5" value={obj.borderBlurAmount} onChange={(e) => updateTargetObject(obj.id, 'borderBlurAmount', parseInt(e.target.value))} className="w-full h-1 bg-gray-200 rounded appearance-none cursor-pointer accent-blue-400" />
+                                                                        <input type="range" min="0" max={subdivisions} step="1" value={obj.borderThicknessIndex} onChange={(e) => updateTargetObject(obj.id, 'borderThicknessIndex', parseInt(e.target.value))} className="w-full h-1 bg-gray-200 rounded appearance-none cursor-pointer accent-blue-500" />
                                                                     </div>
                                                                 )}
+                                                                <div className="grid grid-cols-2 gap-2">
+                                                                    <div>
+                                                                        <span className="text-[9px] text-gray-500 font-bold uppercase block mb-1">Position</span>
+                                                                        <select className="w-full p-1 text-[10px] border border-gray-300 rounded bg-white focus:outline-none focus:ring-1 focus:ring-blue-500" value={obj.borderPosition} onChange={(e) => updateTargetObject(obj.id, 'borderPosition', e.target.value)}>
+                                                                            <option value="outside">Outside</option>
+                                                                            <option value="inside">Inside</option>
+                                                                            <option value="centered">Centered</option>
+                                                                        </select>
+                                                                    </div>
+                                                                    <div>
+                                                                        <span className="text-[9px] text-gray-500 font-bold uppercase block mb-1">Color</span>
+                                                                        <select className="w-full p-1 text-[10px] border border-gray-300 rounded bg-white focus:outline-none focus:ring-1 focus:ring-blue-500" value={obj.borderColour} onChange={(e) => updateTargetObject(obj.id, 'borderColour', e.target.value)}>
+                                                                            <option value="black">Black</option>
+                                                                            <option value="white">White</option>
+                                                                        </select>
+                                                                    </div>
+                                                                </div>
+                                                                <div className="pt-2 border-t border-gray-200">
+                                                                    <label className="flex items-center space-x-2 cursor-pointer mb-2">
+                                                                        <input type="checkbox" checked={obj.borderBlurEnabled} onChange={(e) => updateTargetObject(obj.id, 'borderBlurEnabled', e.target.checked)} className="rounded text-blue-500 focus:ring-blue-500 w-3.5 h-3.5 cursor-pointer" />
+                                                                        <span className="text-[10px] text-gray-600 font-bold">Dither Border (Blur)</span>
+                                                                    </label>
+                                                                    {obj.borderBlurEnabled && (
+                                                                        <div className="animate-fade-in">
+                                                                            <div className="flex justify-between items-center mb-1">
+                                                                                <span className="text-[9px] text-gray-500 font-bold uppercase">Blur Spread</span>
+                                                                                <div className="flex items-center">
+                                                                                    <input type="number" min="5" max="150" step="1" value={obj.borderBlurAmount} onChange={(e) => updateTargetObject(obj.id, 'borderBlurAmount', parseInt(e.target.value) || 0)} className="w-10 text-right text-[10px] font-mono border border-gray-200 rounded px-1 outline-none focus:border-blue-400" />
+                                                                                    <span className="text-[10px] text-gray-400 ml-0.5">px</span>
+                                                                                </div>
+                                                                            </div>
+                                                                            <input type="range" min="5" max="150" step="1" value={obj.borderBlurAmount} onChange={(e) => updateTargetObject(obj.id, 'borderBlurAmount', parseInt(e.target.value))} className="w-full h-1 bg-gray-200 rounded appearance-none cursor-pointer accent-blue-400" />
+                                                                        </div>
+                                                                    )}
+                                                                </div>
                                                             </div>
-                                                        </div>
-                                                    )}
+                                                        )}
+                                                    </div>
                                                 </div>
-                                            </div>
+                                            )}
                                         </div>
                                     ))}
                                 </div>
@@ -1160,38 +1188,52 @@
                                     <div className="space-y-4 pt-2 animate-fade-in bg-gray-50 p-4 rounded-lg border border-gray-100">
                                         <p className="text-xs font-semibold text-gray-700 border-b border-gray-200 pb-1">Input Levels</p>
                                         <div>
-                                            <div className="flex justify-between mb-1">
+                                            <div className="flex justify-between items-center mb-1">
                                                 <span className="text-[10px] text-gray-500 font-medium uppercase">Shadows (Black Point)</span>
-                                                <span className="text-[10px] font-mono bg-white px-1 border border-gray-200 rounded">{envShadows}%</span>
+                                                <div className="flex items-center">
+                                                    <input type="number" min="0" max="99" step="1" value={envShadows} onChange={(e) => setEnvShadows(parseInt(e.target.value) || 0)} className="w-10 text-right text-[10px] font-mono border border-gray-200 rounded px-1 outline-none focus:border-gray-800" />
+                                                    <span className="text-[10px] text-gray-400 ml-0.5">%</span>
+                                                </div>
                                             </div>
                                             <input type="range" min="0" max="99" step="1" value={envShadows} onChange={(e) => setEnvShadows(parseInt(e.target.value))} className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-gray-800" />
                                         </div>
                                         <div>
-                                            <div className="flex justify-between mb-1">
+                                            <div className="flex justify-between items-center mb-1">
                                                 <span className="text-[10px] text-gray-500 font-medium uppercase">Midtones (Gamma)</span>
-                                                <span className="text-[10px] font-mono bg-white px-1 border border-gray-200 rounded">{envMidtones.toFixed(2)}</span>
+                                                <div className="flex items-center">
+                                                    <input type="number" min="0.1" max="3.0" step="0.1" value={envMidtones} onChange={(e) => setEnvMidtones(parseFloat(e.target.value) || 1)} className="w-12 text-right text-[10px] font-mono border border-gray-200 rounded px-1 outline-none focus:border-gray-500" />
+                                                </div>
                                             </div>
                                             <input type="range" min="0.1" max="3.0" step="0.1" value={envMidtones} onChange={(e) => setEnvMidtones(parseFloat(e.target.value))} className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-gray-500" />
                                         </div>
                                         <div>
-                                            <div className="flex justify-between mb-1">
+                                            <div className="flex justify-between items-center mb-1">
                                                 <span className="text-[10px] text-gray-500 font-medium uppercase">Highlights (White Point)</span>
-                                                <span className="text-[10px] font-mono bg-white px-1 border border-gray-200 rounded">{envHighlights}%</span>
+                                                <div className="flex items-center">
+                                                    <input type="number" min="1" max="100" step="1" value={envHighlights} onChange={(e) => setEnvHighlights(parseInt(e.target.value) || 100)} className="w-10 text-right text-[10px] font-mono border border-gray-200 rounded px-1 outline-none focus:border-gray-300" />
+                                                    <span className="text-[10px] text-gray-400 ml-0.5">%</span>
+                                                </div>
                                             </div>
                                             <input type="range" min="1" max="100" step="1" value={envHighlights} onChange={(e) => setEnvHighlights(parseInt(e.target.value))} className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-gray-300" />
                                         </div>
                                         <p className="text-xs font-semibold text-gray-700 border-b border-gray-200 pt-2 pb-1">Output Levels</p>
                                         <div>
-                                            <div className="flex justify-between mb-1">
+                                            <div className="flex justify-between items-center mb-1">
                                                 <span className="text-[10px] text-gray-500 font-medium uppercase">Output Black</span>
-                                                <span className="text-[10px] font-mono bg-white px-1 border border-gray-200 rounded">{envOutputBlack}%</span>
+                                                <div className="flex items-center">
+                                                    <input type="number" min="0" max="100" step="1" value={envOutputBlack} onChange={(e) => setEnvOutputBlack(parseInt(e.target.value) || 0)} className="w-10 text-right text-[10px] font-mono border border-gray-200 rounded px-1 outline-none focus:border-gray-800" />
+                                                    <span className="text-[10px] text-gray-400 ml-0.5">%</span>
+                                                </div>
                                             </div>
                                             <input type="range" min="0" max="100" step="1" value={envOutputBlack} onChange={(e) => setEnvOutputBlack(parseInt(e.target.value))} className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-gray-800" />
                                         </div>
                                         <div>
-                                            <div className="flex justify-between mb-1">
+                                            <div className="flex justify-between items-center mb-1">
                                                 <span className="text-[10px] text-gray-500 font-medium uppercase">Output White</span>
-                                                <span className="text-[10px] font-mono bg-white px-1 border border-gray-200 rounded">{envOutputWhite}%</span>
+                                                <div className="flex items-center">
+                                                    <input type="number" min="0" max="100" step="1" value={envOutputWhite} onChange={(e) => setEnvOutputWhite(parseInt(e.target.value) || 100)} className="w-10 text-right text-[10px] font-mono border border-gray-200 rounded px-1 outline-none focus:border-gray-300" />
+                                                    <span className="text-[10px] text-gray-400 ml-0.5">%</span>
+                                                </div>
                                             </div>
                                             <input type="range" min="0" max="100" step="1" value={envOutputWhite} onChange={(e) => setEnvOutputWhite(parseInt(e.target.value))} className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-gray-300" />
                                         </div>
@@ -1223,9 +1265,12 @@
                                 <div className="grid grid-cols-2 gap-3 pt-3 border-t border-gray-100 mt-3">
                                     {[["marginTop", setMarginTop, "Top"], ["marginBottom", setMarginBottom, "Bottom"], ["marginLeft", setMarginLeft, "Left"], ["marginRight", setMarginRight, "Right"]].map(([key, setter, label]) => (
                                         <div key={key}>
-                                            <div className="flex justify-between mb-1">
+                                            <div className="flex justify-between items-center mb-1">
                                                 <span className="text-[10px] text-gray-500 font-medium uppercase">{label}</span>
-                                                <span className="text-[10px] font-mono bg-white px-1 border border-gray-200 rounded">{eval(key)}%</span>
+                                                <div className="flex items-center">
+                                                    <input type="number" min="0" max="40" step="1" value={eval(key)} onChange={(e) => setter(parseInt(e.target.value) || 0)} className="w-10 text-right text-[10px] font-mono border border-gray-200 rounded px-1 outline-none focus:border-gray-500" />
+                                                    <span className="text-[10px] text-gray-400 ml-0.5">%</span>
+                                                </div>
                                             </div>
                                             <input type="range" min="0" max="40" step="1" value={eval(key)} onChange={(e) => setter(parseInt(e.target.value))} className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-gray-500" />
                                         </div>
@@ -1236,16 +1281,34 @@
                             <div className="space-y-5">
                                 <label className="block text-sm font-semibold text-gray-700">4. Grid Structure</label>
                                 <div>
-                                    <div className="flex justify-between mb-1"><span className="text-xs text-gray-500 font-medium">Smallest Square Size</span><span className="text-xs font-mono bg-gray-100 px-1 rounded">{minSquareSize}px</span></div>
-                                    <input type="range" min="2" max="24" step="2" value={minSquareSize} onChange={(e) => setMinSquareSize(parseInt(e.target.value))} className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600" />
+                                    <div className="flex justify-between items-center mb-1">
+                                        <span className="text-xs text-gray-500 font-medium">Smallest Square Size</span>
+                                        <div className="flex items-center">
+                                            <input type="number" min="2" max="24" step="1" value={minSquareSize} onChange={(e) => setMinSquareSize(parseInt(e.target.value) || 2)} className="w-12 text-right text-xs font-mono border border-gray-200 rounded px-1 py-0.5 outline-none focus:border-blue-600" />
+                                            <span className="text-xs text-gray-400 ml-1">px</span>
+                                        </div>
+                                    </div>
+                                    <input type="range" min="2" max="24" step="1" value={minSquareSize} onChange={(e) => setMinSquareSize(parseInt(e.target.value))} className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600" />
                                 </div>
                                 <div>
-                                    <div className="flex justify-between mb-1"><span className="text-xs text-gray-500 font-medium">Biggest Square Multiplier</span><span className="text-xs font-mono bg-gray-100 px-1 rounded">{Math.pow(2, subdivisions)}x</span></div>
+                                    <div className="flex justify-between items-center mb-1">
+                                        <span className="text-xs text-gray-500 font-medium">Biggest Square Multiplier</span>
+                                        <div className="flex items-center">
+                                            <input type="number" min="1" max="6" step="1" value={subdivisions} onChange={(e) => setSubdivisions(parseInt(e.target.value) || 1)} className="w-12 text-right text-xs font-mono border border-gray-200 rounded px-1 py-0.5 outline-none focus:border-blue-600" />
+                                            <span className="text-xs text-gray-400 ml-1">lvl</span>
+                                        </div>
+                                    </div>
                                     <input type="range" min="1" max="6" step="1" value={subdivisions} onChange={(e) => setSubdivisions(parseInt(e.target.value))} className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600" />
                                 </div>
                                 <div>
-                                    <div className="flex justify-between mb-1"><span className="text-xs text-gray-500 font-medium">Mask Blur</span><span className="text-xs font-mono bg-gray-100 px-1 rounded">{transitionSpread}</span></div>
-                                    <input type="range" min="0" max="150" step="5" value={transitionSpread} onChange={(e) => setTransitionSpread(parseInt(e.target.value))} className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600" />
+                                    <div className="flex justify-between items-center mb-1">
+                                        <span className="text-xs text-gray-500 font-medium">Mask Blur</span>
+                                        <div className="flex items-center">
+                                            <input type="number" min="0" max="150" step="1" value={transitionSpread} onChange={(e) => setTransitionSpread(parseInt(e.target.value) || 0)} className="w-12 text-right text-xs font-mono border border-gray-200 rounded px-1 py-0.5 outline-none focus:border-blue-600" />
+                                            <span className="text-xs text-gray-400 ml-1">px</span>
+                                        </div>
+                                    </div>
+                                    <input type="range" min="0" max="150" step="1" value={transitionSpread} onChange={(e) => setTransitionSpread(parseInt(e.target.value))} className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600" />
                                 </div>
                                 <div className="space-y-2 mt-2 border-t border-gray-100 pt-3">
                                     <label className="flex items-center space-x-2 cursor-pointer"><input type="checkbox" checked={invertChecker} onChange={(e) => setInvertChecker(e.target.checked)} className="rounded text-blue-600 focus:ring-blue-500 w-4 h-4 cursor-pointer" /><span className="text-sm text-gray-700 font-medium">Invert Global Checker Parity</span></label>
@@ -1261,9 +1324,12 @@
                             <div className="space-y-4">
                                 <label className="block text-sm font-semibold text-gray-700">6. Export Settings</label>
                                 <div>
-                                    <div className="flex justify-between mb-1">
+                                    <div className="flex justify-between items-center mb-1">
                                         <span className="text-[10px] text-gray-500 font-medium uppercase">PNG Resolution (Shorter Edge)</span>
-                                        <span className="text-[10px] font-mono bg-white px-1 border border-gray-200 rounded">{pngResolution}px</span>
+                                        <div className="flex items-center">
+                                            <input type="number" min="500" max="5000" step="100" value={pngResolution} onChange={(e) => setPngResolution(parseInt(e.target.value) || 1000)} className="w-16 text-right text-[10px] font-mono border border-gray-200 rounded px-1 py-0.5 outline-none focus:border-blue-600" />
+                                            <span className="text-[10px] text-gray-400 ml-1">px</span>
+                                        </div>
                                     </div>
                                     <input type="range" min="1000" max="3000" step="100" value={pngResolution} onChange={(e) => setPngResolution(parseInt(e.target.value))} className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600" />
                                 </div>
