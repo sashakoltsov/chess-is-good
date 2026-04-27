@@ -4,12 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Vector Mesh Graphics Generator</title>
-    <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- React & ReactDOM -->
     <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-    <!-- Babel for in-browser JSX parsing -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
     <style>
@@ -71,19 +68,25 @@
             inputType: 'svg', // 'svg' or 'image'
             svgInput: defaultSVG,
             imageInput: null,
-            processMode: 'silhouette', // 'silhouette', 'dither', 'original'
+            processMode: 'silhouette', // 'silhouette', 'dither', 'adaptive', 'original'
             objectScale: 0.85,
             alignH: 'center',
             alignV: 'center',
             offsetX: 0,
             offsetY: 0,
-            layerSpreadOffset: 0, // Individual spread adjustment
+            layerSpreadOffset: 0, 
             borderEnabled: false,
             borderThicknessIndex: 0,
             borderPosition: 'outside',
             borderColour: 'black',
             borderBlurEnabled: false,
-            borderBlurAmount: 25
+            borderBlurAmount: 25,
+            // Layer Level Adjustments
+            layerShadows: 0,
+            layerMidtones: 1.0,
+            layerHighlights: 100,
+            layerOutputBlack: 0,
+            layerOutputWhite: 100
         };
 
         const ensureSvgDimensions = (svgStr) => {
@@ -98,8 +101,6 @@
                 let h = svgEl.getAttribute('height');
                 const vb = svgEl.getAttribute('viewBox');
 
-                // If dimensions are missing or relative (%), force absolute coordinates using the viewBox 
-                // Prevents browser defaults (300x150) from squashing the loaded SVG
                 if ((!w || !h || w.includes('%') || h.includes('%')) && vb) {
                     const parts = vb.split(/[\s,]+/).map(parseFloat);
                     if (parts.length >= 4) {
@@ -157,6 +158,18 @@
             return { ...g, svgInput: currentSvgInput, ...parsed };
         });
 
+        const applyLevels = (luma, S, M, H, OB, OW) => {
+            let val = luma;
+            const s = S / 100, h = H / 100;
+            if (h <= s) val = val >= s ? 1 : 0;
+            else {
+                val = Math.max(0, Math.min(1, (val - s) / (h - s)));
+                if (M !== 1.0) val = Math.pow(val, 1.0 / M);
+            }
+            const ob = OB / 100, ow = OW / 100;
+            return val * (ow - ob) + ob;
+        };
+
         const Panel = ({ id, title, isOpen, onToggle, children }) => (
             <div className="border-b border-gray-200">
                 <button onClick={() => onToggle(id)} className="w-full px-5 py-4 flex justify-between items-center bg-white hover:bg-gray-50 focus:outline-none transition-colors">
@@ -173,16 +186,9 @@
 
         const App = () => {
             // Panels state
-            const [panels, setPanels] = useState({
-                layers: true,
-                env: false,
-                graphics: false,
-                grid: false,
-                canvas: false,
-                export: false
-            });
+            const [panels, setPanels] = useState({ layers: true, env: false, graphics: false, grid: false, canvas: false, export: false });
 
-            // Target Objects State (Multiple SVGs/Images)
+            // Target Objects State
             const [targetObjects, setTargetObjects] = useState([{ ...defaultTargetObject, name: 'Layer 1' }]);
             const [coreModuleIndex, setCoreModuleIndex] = useState(0); 
 
@@ -195,12 +201,8 @@
             const [envOutputWhite, setEnvOutputWhite] = useState(100);
             
             // Dual Custom Graphics Libraries
-            const [graphicsBlack, setGraphicsBlack] = useState([
-                { id: 'default-black', isDefault: true, isVisible: true, ratio: 100, targetLevels: [...Array(20).keys()], baseFill: '#000000' }
-            ]);
-            const [graphicsWhite, setGraphicsWhite] = useState([
-                { id: 'default-white', isDefault: true, isVisible: true, ratio: 100, targetLevels: [...Array(20).keys()], baseFill: '#ffffff' }
-            ]);
+            const [graphicsBlack, setGraphicsBlack] = useState([{ id: 'default-black', isDefault: true, isVisible: true, ratio: 100, targetLevels: [...Array(20).keys()], baseFill: '#000000' }]);
+            const [graphicsWhite, setGraphicsWhite] = useState([{ id: 'default-white', isDefault: true, isVisible: true, ratio: 100, targetLevels: [...Array(20).keys()], baseFill: '#ffffff' }]);
 
             // Canvas Setup, Margins & Grid Structure
             const [format, setFormat] = useState(FORMATS[0].aspectRatio);
@@ -210,6 +212,9 @@
             const [marginBottom, setMarginBottom] = useState(10);
             const [marginLeft, setMarginLeft] = useState(10);
             const [marginRight, setMarginRight] = useState(10);
+            const [layoutBorderColor, setLayoutBorderColor] = useState('#000000');
+            const [layoutBorderWidth, setLayoutBorderWidth] = useState(0);
+
             const [baseResolution, setBaseResolution] = useState(1200);
             const [minSquareSize, setMinSquareSize] = useState(6);
             const [subdivisions, setSubdivisions] = useState(4);
@@ -244,31 +249,24 @@
             const currentStateObj = {
                 targetObjects, bgInput, envShadows, envHighlights, envMidtones, envOutputBlack, envOutputWhite,
                 graphicsBlack, graphicsWhite, format, customW, customH, marginTop, marginBottom,
-                marginLeft, marginRight, baseResolution, minSquareSize, subdivisions, transitionSpread, invertChecker, transitionCurve
+                marginLeft, marginRight, layoutBorderColor, layoutBorderWidth, baseResolution, minSquareSize, subdivisions, transitionSpread, invertChecker, transitionCurve
             };
             const currentStateJson = JSON.stringify(currentStateObj);
 
             useEffect(() => {
                 const timer = setTimeout(() => {
                     updatePreview();
-
-                    // Push to history stack
                     if (isUndoRedoRef.current) {
                         isUndoRedoRef.current = false;
                     } else {
                         setHistory(prev => {
                             const newHistory = prev.slice(0, historyIndex + 1);
-                            if (newHistory.length > 0 && newHistory[newHistory.length - 1] === currentStateJson) {
-                                return newHistory; // No change
-                            }
+                            if (newHistory.length > 0 && newHistory[newHistory.length - 1] === currentStateJson) return newHistory;
                             newHistory.push(currentStateJson);
-                            if (newHistory.length > 50) newHistory.shift(); // Keep last 50 states
+                            if (newHistory.length > 50) newHistory.shift(); 
                             return newHistory;
                         });
-                        setHistoryIndex(prev => {
-                            const newIndex = prev + 1;
-                            return newIndex > 49 ? 49 : newIndex;
-                        });
+                        setHistoryIndex(prev => prev + 1 > 49 ? 49 : prev + 1);
                     }
                 }, 300);
                 return () => clearTimeout(timer);
@@ -291,6 +289,8 @@
                 if (config.marginBottom !== undefined) setMarginBottom(config.marginBottom);
                 if (config.marginLeft !== undefined) setMarginLeft(config.marginLeft);
                 if (config.marginRight !== undefined) setMarginRight(config.marginRight);
+                if (config.layoutBorderColor !== undefined) setLayoutBorderColor(config.layoutBorderColor);
+                if (config.layoutBorderWidth !== undefined) setLayoutBorderWidth(config.layoutBorderWidth);
                 if (config.baseResolution !== undefined) setBaseResolution(config.baseResolution);
                 if (config.minSquareSize !== undefined) setMinSquareSize(config.minSquareSize);
                 if (config.subdivisions !== undefined) setSubdivisions(config.subdivisions);
@@ -318,12 +318,7 @@
             };
 
             const exportSettings = () => {
-                const config = {
-                    targetObjects, bgInput, envShadows, envHighlights, envMidtones, envOutputBlack, envOutputWhite,
-                    graphicsBlack, graphicsWhite, format, customW, customH, marginTop, marginBottom,
-                    marginLeft, marginRight, baseResolution, minSquareSize,
-                    subdivisions, transitionSpread, invertChecker, transitionCurve, pngResolution
-                };
+                const config = { ...currentStateObj, pngResolution };
                 const blob = new Blob([JSON.stringify(config, null, 2)], {type: 'application/json'});
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
@@ -340,7 +335,6 @@
                 reader.onload = (event) => {
                     try {
                         const config = JSON.parse(event.target.result);
-                        
                         if (config.targetObjects !== undefined) {
                             setTargetObjects(config.targetObjects.map((obj, i) => ({
                                 ...defaultTargetObject, 
@@ -348,46 +342,11 @@
                                 isExpanded: true,
                                 ...obj 
                             })));
-                        } else if (config.svgInput !== undefined) {
-                            // Legacy single-object support
-                            setTargetObjects([{
-                                ...defaultTargetObject,
-                                id: 'legacy-' + Date.now(),
-                                name: 'Imported Layer',
-                                inputType: 'svg',
-                                svgInput: config.svgInput,
-                                objectScale: config.objectScale || 0.85,
-                                borderEnabled: config.borderEnabled || false,
-                                borderThicknessIndex: config.borderThicknessIndex || 0,
-                                borderPosition: config.borderPosition || 'outside',
-                                borderColour: config.borderColour || 'black',
-                                borderBlurEnabled: config.borderBlurEnabled || false,
-                                borderBlurAmount: config.borderBlurAmount || 25
-                            }]);
                         }
-
                         if (config.coreModuleIndex !== undefined) setCoreModuleIndex(config.coreModuleIndex);
-                        if (config.bgInput !== undefined) setBgInput(config.bgInput);
-                        if (config.envShadows !== undefined) setEnvShadows(config.envShadows);
-                        if (config.envHighlights !== undefined) setEnvHighlights(config.envHighlights);
-                        if (config.envMidtones !== undefined) setEnvMidtones(config.envMidtones);
-                        if (config.envOutputBlack !== undefined) setEnvOutputBlack(config.envOutputBlack);
-                        if (config.envOutputWhite !== undefined) setEnvOutputWhite(config.envOutputWhite);
+                        applyState(config);
                         if (config.graphicsBlack !== undefined) setGraphicsBlack(normalizeGraphics(config.graphicsBlack));
                         if (config.graphicsWhite !== undefined) setGraphicsWhite(normalizeGraphics(config.graphicsWhite));
-                        if (config.format !== undefined) setFormat(config.format);
-                        if (config.customW !== undefined) setCustomW(config.customW);
-                        if (config.customH !== undefined) setCustomH(config.customH);
-                        if (config.marginTop !== undefined) setMarginTop(config.marginTop);
-                        if (config.marginBottom !== undefined) setMarginBottom(config.marginBottom);
-                        if (config.marginLeft !== undefined) setMarginLeft(config.marginLeft);
-                        if (config.marginRight !== undefined) setMarginRight(config.marginRight);
-                        if (config.baseResolution !== undefined) setBaseResolution(config.baseResolution);
-                        if (config.minSquareSize !== undefined) setMinSquareSize(config.minSquareSize);
-                        if (config.subdivisions !== undefined) setSubdivisions(config.subdivisions);
-                        if (config.transitionSpread !== undefined) setTransitionSpread(config.transitionSpread);
-                        if (config.invertChecker !== undefined) setInvertChecker(config.invertChecker);
-                        if (config.transitionCurve !== undefined) setTransitionCurve(config.transitionCurve);
                         if (config.pngResolution !== undefined) setPngResolution(config.pngResolution);
                     } catch (err) {
                         console.error(err);
@@ -515,7 +474,7 @@
 
                 const adaptedMinSize = ((S_max_x + S_max_y) / 2) / Math.pow(2, subdivisions);
 
-                // Load Data (SVG or Image)
+                // Load Data
                 const loadedImgs = await Promise.all(targetObjects.map(obj => {
                     if (obj.isVisible === false) return Promise.resolve(null);
                     if (obj.inputType === 'image') {
@@ -530,7 +489,7 @@
 
                 const imgB = await loadImage(bgInput, false);
 
-                // Create idMap (Stores the topmost layer ID at every pixel to guide Process Modes)
+                // Create idMap (Stores the topmost layer ID)
                 const idCanvas = document.createElement('canvas');
                 idCanvas.width = W; idCanvas.height = H;
                 const idCtx = idCanvas.getContext('2d', { willReadFrequently: true });
@@ -547,7 +506,7 @@
                     tCtx.drawImage(img, dx, dy, drawW, drawH);
                     
                     tCtx.globalCompositeOperation = 'source-in';
-                    tCtx.fillStyle = `rgb(${idx + 1}, 0, 0)`; // Red channel tracks layer ID + 1
+                    tCtx.fillStyle = `rgb(${idx + 1}, 0, 0)`; 
                     tCtx.fillRect(0, 0, W, H);
                     
                     idCtx.drawImage(tempC, 0, 0);
@@ -567,14 +526,14 @@
                     visCtx.drawImage(img, dx, dy, drawW, drawH);
                 }
                 const imgDataVisual = visCtx.getImageData(0, 0, W, H).data;
-                const imgDataA = imgDataVisual; // Re-use alpha for density quadtree
+                const imgDataA = imgDataVisual;
 
                 const canvas = document.createElement('canvas');
                 canvas.width = W;
                 canvas.height = H;
                 const ctx = canvas.getContext('2d', { willReadFrequently: true });
                 
-                // Draw Blurred Mask (imgDataMask)
+                // Draw Blurred Mask
                 ctx.clearRect(0, 0, W, H);
                 for (let idx = targetObjects.length - 1; idx >= 0; idx--) {
                     const obj = targetObjects[idx];
@@ -582,26 +541,21 @@
                     if (!img || obj.isVisible === false) continue;
                     
                     const effectiveSpread = Math.max(0, transitionSpread + (obj.layerSpreadOffset || 0));
-                    if (effectiveSpread > 0) {
-                        ctx.filter = `blur(${effectiveSpread}px)`;
-                    } else {
-                        ctx.filter = 'none';
-                    }
+                    if (effectiveSpread > 0) ctx.filter = `blur(${effectiveSpread}px)`;
+                    else ctx.filter = 'none';
                     
                     const { drawW, drawH, dx, dy } = getObjTransform(obj, img, innerW, innerH, offsetX, offsetY);
                     ctx.drawImage(img, dx, dy, drawW, drawH);
                 }
-                ctx.filter = 'none'; // reset filter
+                ctx.filter = 'none'; 
                 const imgDataMask = ctx.getImageData(0, 0, W, H).data;
 
-                // Draw Environment Background
+                // Draw Env
                 ctx.clearRect(0, 0, W, H);
-                if (imgB) {
-                    ctx.drawImage(imgB, offsetX, offsetY, innerW, innerH);
-                } 
+                if (imgB) ctx.drawImage(imgB, offsetX, offsetY, innerW, innerH);
                 const imgDataB = ctx.getImageData(0, 0, W, H).data;
 
-                // Compute per-object borders
+                // Compute borders
                 const borderLayers = [];
                 for (let idx = 0; idx < targetObjects.length; idx++) {
                     const obj = targetObjects[idx];
@@ -665,11 +619,7 @@
                         }
                     }
                     
-                    borderLayers.push({
-                        alphaData: objBorderAlpha,
-                        color: obj.borderColour,
-                        isBlurred: obj.borderBlurEnabled
-                    });
+                    borderLayers.push({ alphaData: objBorderAlpha, color: obj.borderColour, isBlurred: obj.borderBlurEnabled });
                 }
 
                 // Pre-calculate quadtree SAT
@@ -682,24 +632,28 @@
                         const alpha_sharp = imgDataA[i + 3] / 255; 
                         let alpha_blur = imgDataMask[i + 3] / 255;
                         if (alpha_blur > 0 && alpha_blur < 1) alpha_blur = Math.pow(alpha_blur, transitionCurve);
+                        
                         let bg_luma = 0;
                         if (imgB) {
                             const bg_r = imgDataB[i], bg_g = imgDataB[i+1], bg_b = imgDataB[i+2], bg_a = imgDataB[i+3] / 255;
                             let raw_luma = bg_a > 0 ? (bg_r * 0.299 + bg_g * 0.587 + bg_b * 0.114) / 255 : 0;
-                            const S = envShadows / 100;
-                            const H = envHighlights / 100;
-                            if (H <= S) raw_luma = raw_luma >= S ? 1 : 0;
-                            else {
-                                raw_luma = Math.max(0, Math.min(1, (raw_luma - S) / (H - S)));
-                                if (envMidtones !== 1.0) raw_luma = Math.pow(raw_luma, 1.0 / envMidtones);
-                            }
-                            const OB = envOutputBlack / 100;
-                            const OW = envOutputWhite / 100;
-                            raw_luma = raw_luma * (OW - OB) + OB;
-                            bg_luma = raw_luma;
+                            bg_luma = applyLevels(raw_luma, envShadows, envMidtones, envHighlights, envOutputBlack, envOutputWhite);
                         }
-                        const density_under = bg_luma * (1 - alpha_blur) + coreDensity * alpha_blur;
-                        const finalDensity = density_under * (1 - alpha_sharp) + coreDensity * alpha_sharp;
+
+                        const topLayerId = idMap[i] - 1;
+                        let pixelDensity = coreDensity;
+
+                        if (topLayerId >= 0 && topLayerId < targetObjects.length) {
+                            const obj = targetObjects[topLayerId];
+                            if (obj.processMode === 'adaptive') {
+                                const r = imgDataVisual[i], g = imgDataVisual[i+1], b = imgDataVisual[i+2];
+                                let raw_luma = (r * 0.299 + g * 0.587 + b * 0.114) / 255;
+                                pixelDensity = applyLevels(raw_luma, obj.layerShadows ?? 0, obj.layerMidtones ?? 1, obj.layerHighlights ?? 100, obj.layerOutputBlack ?? 0, obj.layerOutputWhite ?? 100);
+                            }
+                        }
+
+                        const density_under = bg_luma * (1 - alpha_blur) + pixelDensity * alpha_blur;
+                        const finalDensity = density_under * (1 - alpha_sharp) + pixelDensity * alpha_sharp;
                         rowSum += finalDensity;
                         sat[(y + 1) * (W + 1) + (x + 1)] = sat[y * (W + 1) + (x + 1)] + rowSum;
                     }
@@ -728,9 +682,7 @@
                     const targetDepth = Math.floor((1 - avgDensity) * (subdivisions + 1));
                     let safeTargetDepth = Math.max(0, Math.min(subdivisions, targetDepth));
                     
-                    if (isDraft) {
-                        safeTargetDepth = Math.max(draftDepthCutoff, safeTargetDepth);
-                    }
+                    if (isDraft) safeTargetDepth = Math.max(draftDepthCutoff, safeTargetDepth);
 
                     if (depth > safeTargetDepth) {
                         const step = Math.pow(2, depth - 1), hw = w / 2, hh = h / 2;
@@ -782,22 +734,21 @@
                     const cx = Math.floor(rect.x + rect.w / 2), cy = Math.floor(rect.y + rect.h / 2);
                     const safeX = Math.max(0, Math.min(W - 1, cx)), safeY = Math.max(0, Math.min(H - 1, cy));
                     
-                    // Resolve Process Modes using center pixel mapping
                     const centerIdx = (safeY * W + safeX) * 4;
                     const topLayerId = idMap[centerIdx] - 1;
 
                     if (topLayerId >= 0 && topLayerId < targetObjects.length) {
                         const obj = targetObjects[topLayerId];
-                        if (obj.processMode === 'dither') {
+                        if (obj.processMode === 'dither' || obj.processMode === 'adaptive') {
                             const r = imgDataVisual[centerIdx], g = imgDataVisual[centerIdx+1], b = imgDataVisual[centerIdx+2];
-                            const luma = (r * 0.299 + g * 0.587 + b * 0.114) / 255;
+                            let luma = (r * 0.299 + g * 0.587 + b * 0.114) / 255;
+                            luma = applyLevels(luma, obj.layerShadows ?? 0, obj.layerMidtones ?? 1, obj.layerHighlights ?? 100, obj.layerOutputBlack ?? 0, obj.layerOutputWhite ?? 100);
                             const bX = rect.gridX % 8, bY = rect.gridY % 8;
                             const threshold = bayer8x8[bY][bX];
                             isBlack = luma < threshold;
                         }
                     }
                     
-                    // Resolve multiple borders top-down
                     if (borderLayers.length > 0) {
                         for (let i = 0; i < borderLayers.length; i++) {
                             const layer = borderLayers[i];
@@ -886,20 +837,21 @@
                     elementsRendered++;
                 }
 
-                // Mode 3: Add original images on top of the generated vector mesh
+                if (layoutBorderWidth > 0) {
+                    svgCode += `<rect x="${offsetX}" y="${offsetY}" width="${innerW}" height="${innerH}" fill="none" stroke="${layoutBorderColor}" stroke-width="${layoutBorderWidth}" vector-effect="non-scaling-stroke" pointer-events="none" />\n`;
+                }
+
+                // Add original images on top
                 for (let idx = targetObjects.length - 1; idx >= 0; idx--) {
                     const obj = targetObjects[idx];
                     const img = loadedImgs[idx];
                     if (obj.isVisible !== false && obj.processMode === 'original' && img) {
                         const { drawW, drawH, dx, dy } = getObjTransform(obj, img, innerW, innerH, offsetX, offsetY);
-                        
                         let hrefStr = img.src;
-                        // Use inline base64 for SVGs instead of volatile blob URLs to ensure proper rendering and export
                         if ((!obj.inputType || obj.inputType === 'svg') && obj.svgInput) {
                             const fixedSvgStr = ensureSvgDimensions(obj.svgInput);
                             hrefStr = "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(fixedSvgStr)));
                         }
-                        
                         svgCode += `<image x="${dx}" y="${dy}" width="${drawW}" height="${drawH}" href="${hrefStr}" preserveAspectRatio="none" />\n`;
                     }
                 }
@@ -1077,11 +1029,9 @@
                     const activeFormat = format === 'custom' ? (customW / Math.max(1, customH)) : format;
 
                     if (activeFormat >= 1) { 
-                        // Landscape or Square: H is shorter side
                         exportH = pngResolution;
                         exportW = Math.round(pngResolution * activeFormat);
                     } else { 
-                        // Portrait: W is shorter side
                         exportW = pngResolution;
                         exportH = Math.round(pngResolution / activeFormat);
                     }
@@ -1092,7 +1042,6 @@
                     const ctx = canvas.getContext('2d');
                     
                     const img = new Image();
-                    // Replace the physical width/height for sharp internal SVG scaling before creating the Blob
                     const exportSvgCode = result.svgCode.replace(/width="\d+" height="\d+"/, `width="${exportW}" height="${exportH}"`);
                     const svgBlob = new Blob([exportSvgCode], {type: 'image/svg+xml;charset=utf-8'});
                     const url = URL.createObjectURL(svgBlob);
@@ -1292,7 +1241,7 @@
 
             return (
                 <div className="flex h-screen w-screen overflow-hidden bg-gray-50 text-gray-800">
-                    <div className="w-96 flex flex-col bg-gray-50 border-r border-gray-200 shadow-sm z-10 flex-shrink-0 relative">
+                    <div className="w-[420px] flex flex-col bg-gray-50 border-r border-gray-200 shadow-sm z-10 flex-shrink-0 relative">
                         <div className="p-5 border-b border-gray-200 bg-white sticky top-0 z-20 flex justify-between items-center shadow-sm">
                             <div>
                                 <h1 className="text-xl font-bold tracking-tight text-gray-900">Vector Mesh<span className="text-blue-600">.</span></h1>
@@ -1398,11 +1347,45 @@
                                                     <div className="pt-2 border-t border-gray-100 mb-2">
                                                         <span className="text-[10px] text-gray-500 font-bold uppercase block mb-1">Process Mode</span>
                                                         <select className="w-full p-1.5 text-[10px] border border-gray-300 rounded bg-white focus:outline-none focus:ring-1 focus:ring-blue-500 font-medium" value={obj.processMode || 'silhouette'} onChange={(e) => updateTargetObject(obj.id, 'processMode', e.target.value)}>
-                                                            <option value="silhouette">Silhouette (Fill with grid modules)</option>
-                                                            <option value="dither">Dither (Match grid to image lightness)</option>
+                                                            <option value="silhouette">Silhouette (Fill with uniform grid modules)</option>
+                                                            <option value="dither">Dither (Match grid tone to image lightness)</option>
+                                                            <option value="adaptive">Adaptive Mesh (Subdivide by image lightness)</option>
                                                             <option value="original">Overlay (Original image on top of grid)</option>
                                                         </select>
                                                     </div>
+
+                                                    {(obj.processMode === 'dither' || obj.processMode === 'adaptive') && (
+                                                        <div className="pt-3 mt-3 border-t border-gray-100 animate-fade-in">
+                                                            <span className="text-[10px] text-gray-500 font-bold uppercase block mb-2">Layer Adjustments (Levels)</span>
+                                                            <div className="space-y-2">
+                                                                <div className="flex items-center gap-2">
+                                                                    <span className="text-[9px] text-gray-500 w-12">Shadows</span>
+                                                                    <input type="range" min="0" max="99" value={obj.layerShadows ?? 0} onChange={(e) => updateTargetObject(obj.id, 'layerShadows', parseInt(e.target.value))} className="flex-1 h-1 bg-gray-200 rounded appearance-none cursor-pointer accent-gray-800" />
+                                                                    <input type="number" min="0" max="99" value={obj.layerShadows ?? 0} onChange={(e) => updateTargetObject(obj.id, 'layerShadows', parseInt(e.target.value)||0)} className="w-8 text-[9px] text-right border rounded p-0.5" />
+                                                                </div>
+                                                                <div className="flex items-center gap-2">
+                                                                    <span className="text-[9px] text-gray-500 w-12">Midtones</span>
+                                                                    <input type="range" min="0.1" max="3.0" step="0.1" value={obj.layerMidtones ?? 1.0} onChange={(e) => updateTargetObject(obj.id, 'layerMidtones', parseFloat(e.target.value))} className="flex-1 h-1 bg-gray-200 rounded appearance-none cursor-pointer accent-gray-500" />
+                                                                    <input type="number" min="0.1" max="3.0" step="0.1" value={obj.layerMidtones ?? 1.0} onChange={(e) => updateTargetObject(obj.id, 'layerMidtones', parseFloat(e.target.value)||1)} className="w-8 text-[9px] text-right border rounded p-0.5" />
+                                                                </div>
+                                                                <div className="flex items-center gap-2">
+                                                                    <span className="text-[9px] text-gray-500 w-12">Highlights</span>
+                                                                    <input type="range" min="1" max="100" value={obj.layerHighlights ?? 100} onChange={(e) => updateTargetObject(obj.id, 'layerHighlights', parseInt(e.target.value))} className="flex-1 h-1 bg-gray-200 rounded appearance-none cursor-pointer accent-gray-300" />
+                                                                    <input type="number" min="1" max="100" value={obj.layerHighlights ?? 100} onChange={(e) => updateTargetObject(obj.id, 'layerHighlights', parseInt(e.target.value)||100)} className="w-8 text-[9px] text-right border rounded p-0.5" />
+                                                                </div>
+                                                                <div className="flex gap-2 pt-1 border-t border-gray-100/50 mt-1">
+                                                                    <div className="flex-1">
+                                                                        <span className="text-[8px] text-gray-400 block mb-1">OUT BLACK</span>
+                                                                        <input type="range" min="0" max="100" value={obj.layerOutputBlack ?? 0} onChange={(e) => updateTargetObject(obj.id, 'layerOutputBlack', parseInt(e.target.value))} className="w-full h-1 bg-gray-200 rounded appearance-none cursor-pointer accent-gray-800" />
+                                                                    </div>
+                                                                    <div className="flex-1">
+                                                                        <span className="text-[8px] text-gray-400 block mb-1 text-right">OUT WHITE</span>
+                                                                        <input type="range" min="0" max="100" value={obj.layerOutputWhite ?? 100} onChange={(e) => updateTargetObject(obj.id, 'layerOutputWhite', parseInt(e.target.value))} className="w-full h-1 bg-gray-200 rounded appearance-none cursor-pointer accent-gray-300" />
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    )}
 
                                                     <div className="pt-2 border-t border-gray-100">
                                                         <div className="flex justify-between items-center mb-1">
@@ -1682,6 +1665,17 @@
                                             <input type="range" min="0" max="40" step="1" value={eval(key)} onChange={(e) => setter(parseInt(e.target.value))} className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-gray-500" />
                                         </div>
                                     ))}
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-3 pt-3 border-t border-gray-100 mt-3">
+                                    <div>
+                                        <span className="text-[10px] text-gray-500 font-bold uppercase block mb-1">Layout Border Width</span>
+                                        <input type="number" min="0" max="50" step="1" value={layoutBorderWidth} onChange={(e) => setLayoutBorderWidth(parseInt(e.target.value) || 0)} className="w-full p-1.5 text-xs border border-gray-300 rounded bg-white focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                                    </div>
+                                    <div>
+                                        <span className="text-[10px] text-gray-500 font-bold uppercase block mb-1">Layout Border Color</span>
+                                        <input type="color" value={layoutBorderColor} onChange={(e) => setLayoutBorderColor(e.target.value)} className="w-full h-[30px] rounded cursor-pointer border border-gray-300" />
+                                    </div>
                                 </div>
                             </Panel>
 
