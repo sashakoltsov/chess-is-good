@@ -4,9 +4,12 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Vector Mesh Graphics Generator</title>
+    <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React & ReactDOM -->
     <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <!-- Babel for in-browser JSX parsing -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
     <style>
@@ -204,7 +207,7 @@
             const [graphicsBlack, setGraphicsBlack] = useState([{ id: 'default-black', isDefault: true, isVisible: true, ratio: 100, targetLevels: [...Array(20).keys()], baseFill: '#000000' }]);
             const [graphicsWhite, setGraphicsWhite] = useState([{ id: 'default-white', isDefault: true, isVisible: true, ratio: 100, targetLevels: [...Array(20).keys()], baseFill: '#ffffff' }]);
 
-            // Canvas Setup, Margins & Grid Structure
+            // Canvas Setup & Margins
             const [format, setFormat] = useState(FORMATS[0].aspectRatio);
             const [customW, setCustomW] = useState(1080);
             const [customH, setCustomH] = useState(1080);
@@ -212,9 +215,9 @@
             const [marginBottom, setMarginBottom] = useState(10);
             const [marginLeft, setMarginLeft] = useState(10);
             const [marginRight, setMarginRight] = useState(10);
-            const [layoutBorderColor, setLayoutBorderColor] = useState('#000000');
-            const [layoutBorderWidth, setLayoutBorderWidth] = useState(0);
+            const [marginColor, setMarginColor] = useState('#ef4444');
 
+            // Grid Structure
             const [baseResolution, setBaseResolution] = useState(1200);
             const [minSquareSize, setMinSquareSize] = useState(6);
             const [subdivisions, setSubdivisions] = useState(4);
@@ -249,7 +252,7 @@
             const currentStateObj = {
                 targetObjects, bgInput, envShadows, envHighlights, envMidtones, envOutputBlack, envOutputWhite,
                 graphicsBlack, graphicsWhite, format, customW, customH, marginTop, marginBottom,
-                marginLeft, marginRight, layoutBorderColor, layoutBorderWidth, baseResolution, minSquareSize, subdivisions, transitionSpread, invertChecker, transitionCurve
+                marginLeft, marginRight, marginColor, baseResolution, minSquareSize, subdivisions, transitionSpread, invertChecker, transitionCurve
             };
             const currentStateJson = JSON.stringify(currentStateObj);
 
@@ -289,8 +292,7 @@
                 if (config.marginBottom !== undefined) setMarginBottom(config.marginBottom);
                 if (config.marginLeft !== undefined) setMarginLeft(config.marginLeft);
                 if (config.marginRight !== undefined) setMarginRight(config.marginRight);
-                if (config.layoutBorderColor !== undefined) setLayoutBorderColor(config.layoutBorderColor);
-                if (config.layoutBorderWidth !== undefined) setLayoutBorderWidth(config.layoutBorderWidth);
+                if (config.marginColor !== undefined) setMarginColor(config.marginColor);
                 if (config.baseResolution !== undefined) setBaseResolution(config.baseResolution);
                 if (config.minSquareSize !== undefined) setMinSquareSize(config.minSquareSize);
                 if (config.subdivisions !== undefined) setSubdivisions(config.subdivisions);
@@ -643,6 +645,7 @@
                         const topLayerId = idMap[i] - 1;
                         let pixelDensity = coreDensity;
 
+                        // Calculate density for adaptive subdivision
                         if (topLayerId >= 0 && topLayerId < targetObjects.length) {
                             const obj = targetObjects[topLayerId];
                             if (obj.processMode === 'adaptive') {
@@ -724,7 +727,11 @@
                 }
                 defsCode += `</defs>\n`;
                 if (hasDefs) svgCode += defsCode;
-                svgCode += `<rect width="${W}" height="${H}" fill="#ffffff"/>\n`; 
+                
+                // Draw Margin Base Background Fill
+                svgCode += `<rect width="${W}" height="${H}" fill="${marginColor}"/>\n`;
+                // Draw Inner Grid White Base Background
+                svgCode += `<rect x="${offsetX}" y="${offsetY}" width="${innerW}" height="${innerH}" fill="#ffffff"/>\n`; 
                 
                 let elementsRendered = 0;
                 for (const rect of rects) {
@@ -739,7 +746,9 @@
 
                     if (topLayerId >= 0 && topLayerId < targetObjects.length) {
                         const obj = targetObjects[topLayerId];
-                        if (obj.processMode === 'dither' || obj.processMode === 'adaptive') {
+                        // Dither mode specifically overrides parity with lightness threshold
+                        // (Adaptive Mesh relies strictly on spatial parity but modifies rect size)
+                        if (obj.processMode === 'dither') {
                             const r = imgDataVisual[centerIdx], g = imgDataVisual[centerIdx+1], b = imgDataVisual[centerIdx+2];
                             let luma = (r * 0.299 + g * 0.587 + b * 0.114) / 255;
                             luma = applyLevels(luma, obj.layerShadows ?? 0, obj.layerMidtones ?? 1, obj.layerHighlights ?? 100, obj.layerOutputBlack ?? 0, obj.layerOutputWhite ?? 100);
@@ -835,10 +844,6 @@
                         }
                     }
                     elementsRendered++;
-                }
-
-                if (layoutBorderWidth > 0) {
-                    svgCode += `<rect x="${offsetX}" y="${offsetY}" width="${innerW}" height="${innerH}" fill="none" stroke="${layoutBorderColor}" stroke-width="${layoutBorderWidth}" vector-effect="non-scaling-stroke" pointer-events="none" />\n`;
                 }
 
                 // Add original images on top
@@ -1667,14 +1672,13 @@
                                     ))}
                                 </div>
 
-                                <div className="grid grid-cols-2 gap-3 pt-3 border-t border-gray-100 mt-3">
-                                    <div>
-                                        <span className="text-[10px] text-gray-500 font-bold uppercase block mb-1">Layout Border Width</span>
-                                        <input type="number" min="0" max="50" step="1" value={layoutBorderWidth} onChange={(e) => setLayoutBorderWidth(parseInt(e.target.value) || 0)} className="w-full p-1.5 text-xs border border-gray-300 rounded bg-white focus:outline-none focus:ring-1 focus:ring-blue-500" />
-                                    </div>
-                                    <div>
-                                        <span className="text-[10px] text-gray-500 font-bold uppercase block mb-1">Layout Border Color</span>
-                                        <input type="color" value={layoutBorderColor} onChange={(e) => setLayoutBorderColor(e.target.value)} className="w-full h-[30px] rounded cursor-pointer border border-gray-300" />
+                                <div className="pt-3 border-t border-gray-100 mt-3">
+                                    <div className="flex items-center justify-between mb-1">
+                                        <span className="text-[10px] text-gray-500 font-bold uppercase block mb-1">Margin Background Fill</span>
+                                        <div className="flex items-center gap-2">
+                                            <input type="color" value={marginColor} onChange={(e) => setMarginColor(e.target.value)} className="w-7 h-7 rounded cursor-pointer border border-gray-300" />
+                                            <span className="text-[10px] font-mono text-gray-400">{marginColor.toUpperCase()}</span>
+                                        </div>
                                     </div>
                                 </div>
                             </Panel>
