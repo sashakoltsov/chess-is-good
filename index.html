@@ -846,19 +846,40 @@
                     elementsRendered++;
                 }
 
-                // Add original images on top
+// Add original images on top
                 for (let idx = targetObjects.length - 1; idx >= 0; idx--) {
                     const obj = targetObjects[idx];
                     const img = loadedImgs[idx];
                     if (obj.isVisible !== false && obj.processMode === 'original' && img) {
                         const { drawW, drawH, dx, dy } = getObjTransform(obj, img, innerW, innerH, offsetX, offsetY);
-                        let hrefStr = img.src;
+                        
+                        // If it's an SVG, embed it natively rather than using an <image> tag
                         if ((!obj.inputType || obj.inputType === 'svg') && obj.svgInput) {
-                            const fixedSvgStr = ensureSvgDimensions(obj.svgInput);
-                            hrefStr = "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(fixedSvgStr)));
+                            try {
+                                const parser = new DOMParser();
+                                const doc = parser.parseFromString(obj.svgInput, "image/svg+xml");
+                                const svgEl = doc.documentElement;
+                                
+                                if (svgEl.tagName.toLowerCase() === 'svg') {
+                                    // Inject position and scale attributes directly into the nested SVG
+                                    svgEl.setAttribute('x', dx);
+                                    svgEl.setAttribute('y', dy);
+                                    svgEl.setAttribute('width', drawW);
+                                    svgEl.setAttribute('height', drawH);
+                                    svgEl.setAttribute('preserveAspectRatio', 'none'); // Matches <image> stretching
+                                    
+                                    // Serialize and append to your main document
+                                    svgCode += new XMLSerializer().serializeToString(svgEl) + '\n';
+                                    continue; // Skip the image tag fallback below
+                                }
+                            } catch (e) {
+                                console.warn("Failed to natively embed SVG, falling back to raster image tag", e);
+                            }
                         }
-// Add xlink:href so desktop software can read the embedded data URI
-        svgCode += `<image x="${dx}" y="${dy}" width="${drawW}" height="${drawH}" href="${hrefStr}" xlink:href="${hrefStr}" preserveAspectRatio="none" />\n`;
+
+                        // Fallback for PNG/JPGs (Raster images)
+                        let hrefStr = img.src;
+                        svgCode += `<image x="${dx}" y="${dy}" width="${drawW}" height="${drawH}" href="${hrefStr}" xlink:href="${hrefStr}" preserveAspectRatio="none" />\n`;
                     }
                 }
 
