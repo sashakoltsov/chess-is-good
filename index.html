@@ -857,7 +857,8 @@
                             const fixedSvgStr = ensureSvgDimensions(obj.svgInput);
                             hrefStr = "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(fixedSvgStr)));
                         }
-                        svgCode += `<image x="${dx}" y="${dy}" width="${drawW}" height="${drawH}" href="${hrefStr}" preserveAspectRatio="none" />\n`;
+// Add xlink:href so desktop software can read the embedded data URI
+        svgCode += `<image x="${dx}" y="${dy}" width="${drawW}" height="${drawH}" href="${hrefStr}" xlink:href="${hrefStr}" preserveAspectRatio="none" />\n`;
                     }
                 }
 
